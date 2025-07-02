@@ -46,7 +46,7 @@ export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses
 
             ctx.restore();
 
-            const poses = await detector.estimatePoses(offscreenCanvas as unknown as HTMLCanvasElement, { flipHorizontal: false });
+            const poses: poseDetection.Pose[] = await detector.estimatePoses(offscreenCanvas as unknown as HTMLCanvasElement, { flipHorizontal: false });
             setPoses({
                 poses: poses,
                 timestamp: videoFrame.timestamp/1000
