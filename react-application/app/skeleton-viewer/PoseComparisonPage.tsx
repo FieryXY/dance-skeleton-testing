@@ -40,7 +40,7 @@ export default function PoseComparisonPage() {
       ]);
       setAnnotatedVideoUrl(videoUrl);
       setLevelData(level);
-      scorerRef.current = new SessionScorer(level, 5000, []);
+      scorerRef.current = new SessionScorer(level, 500, []);
     } catch (err) {
       alert("Failed to fetch video or level data");
       console.error(err);

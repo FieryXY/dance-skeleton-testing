@@ -34,9 +34,18 @@ export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses
                 controller.enqueue(videoFrame);
                 return;
             }
+
+            ctx.save();
+
+            // Initially mirror context
+            ctx.translate(videoFrame.displayWidth, 0);
+            ctx.scale(-1, 1);
       
             // Perform detection and drawing
             ctx.drawImage(videoFrame, 0, 0, videoFrame.displayWidth, videoFrame.displayHeight);
+
+            ctx.restore();
+
             const poses = await detector.estimatePoses(offscreenCanvas as unknown as HTMLCanvasElement, { flipHorizontal: false });
             setPoses({
                 poses: poses,
@@ -167,9 +176,10 @@ function comparePoses2D(pose1: poseDetection.Pose, pose2: poseDetection.Pose) {
 
     // Get the root square difference between the two poses
     let sum = 0;
+    const filtered_names = ["left_wrist", "right_wrist", "left_elbow", "right_elbow", "left_knee", "right_knee", "left_ankle", "right_ankle"]
     for(const kp1 of final1) {
         for(const kp2 of final2) {
-            if(kp1.name == kp2.name) {
+            if(kp1.name && kp1.name == kp2.name && filtered_names.includes(kp1.name)) {
                 sum += (kp1.x - kp2.x) ** 2 + (kp1.y - kp2.y) ** 2;
             }
         }
@@ -178,16 +188,56 @@ function comparePoses2D(pose1: poseDetection.Pose, pose2: poseDetection.Pose) {
 }
 
 function comparePosesByAngles2D(pose1: poseDetection.Pose, pose2: poseDetection.Pose): { [key: string]: number } {
-    const angles_to_consider: string[][] = [
-        ["left_shoulder", "left_elbow", "left_wrist"],
-        ["right_shoulder", "right_elbow", "right_wrist"],
-        ["left_hip", "left_knee", "left_ankle"],
-        ["right_hip", "right_knee", "right_ankle"],
-        ["left_hip", "left_shoulder", "right_shoulder"],
-        ["right_hip", "right_shoulder", "left_shoulder"],
-        ["left_knee", "left_hip", "right_hip"],
-        ["right_knee", "right_hip", "left_hip"],
-    ]
+    const angles_to_consider: { [key: string]: {keypoints: string[], raw_weight: number} } = {
+        "left_elbow": {
+            "keypoints": ["left_shoulder", "left_elbow", "left_wrist"],
+            "raw_weight": 3
+        },
+        "right_elbow": {
+            "keypoints": ["right_shoulder", "right_elbow", "right_wrist"],
+            "raw_weight": 3
+        },
+        "left_knee": {
+            "keypoints": ["left_hip", "left_knee", "left_ankle"],
+            "raw_weight": 3
+        },
+        "right_knee": {
+            "keypoints": ["right_hip", "right_knee", "right_ankle"],
+            "raw_weight": 3
+        },
+        "left_armpit": {
+            "keypoints": ["left_hip", "left_shoulder", "left_elbow"],
+            "raw_weight": 3
+        },
+        "right_armpit": {
+            "keypoints": ["right_hip", "right_shoulder", "right_elbow"],
+            "raw_weight": 3
+        },
+        "between_legs_left": {
+            "keypoints": ["left_knee", "left_hip", "right_hip"],
+            "raw_weight": 1.5
+        },
+        "between_legs_right": {
+            "keypoints": ["right_knee", "right_hip", "left_hip"],
+            "raw_weight": 1.5
+        },
+        "top_left_chest": {
+            "keypoints": ["left_hip", "left_shoulder", "right_shoulder"],
+            "raw_weight": 1
+        },
+        "top_right_chest": {
+            "keypoints": ["right_hip", "right_shoulder", "left_shoulder"],
+            "raw_weight": 1
+        },
+        "bottom_left_chest": {
+            "keypoints": ["left_shoulder", "left_hip", "right_hip"],
+            "raw_weight": 1
+        },
+        "bottom_right_chest": {
+            "keypoints": ["right_shoulder", "right_hip", "left_hip"],
+            "raw_weight": 1
+        },
+    }
 
     let total_score = 0;
 
@@ -195,7 +245,9 @@ function comparePosesByAngles2D(pose1: poseDetection.Pose, pose2: poseDetection.
     let all_angle_scores: { [key: string]: number } = {};
 
     // Calculate the angle between the three points for each angle in the list
-    for(const angle of angles_to_consider) {
+    for(const angle_name in angles_to_consider) {
+        const angle = angles_to_consider[angle_name].keypoints;
+        const raw_weight = angles_to_consider[angle_name].raw_weight;
         const kp1_one = pose1.keypoints.find(kp => kp.name == angle[0]);
         const kp1_two = pose1.keypoints.find(kp => kp.name == angle[1]);
         const kp1_three = pose1.keypoints.find(kp => kp.name == angle[2]);
@@ -212,11 +264,22 @@ function comparePosesByAngles2D(pose1: poseDetection.Pose, pose2: poseDetection.
         const angle_two = calculateAngleFromPoints(kp2_one.x, kp2_one.y, kp2_two.x, kp2_two.y, kp2_three.x, kp2_three.y);
 
         const angle_difference = Math.abs(angle_one - angle_two);
-        const angle_score = 100 - (angle_difference) / Math.PI;
+        const angle_score = 100 - (angle_difference * 100) / Math.PI;
 
-        all_angle_scores[angle[1]] = angle_score;
-        total_score += angle_score;
+        const smoothing_factor = 0.01;
+
+        // Angle scores seem to be biased towards higher values, so we square them
+        const transformed_angle_score = smoothing_factor * angle_score * angle_score;
+
+        // Normalize the transformed angle score to be between 0 and 100 if it isn't already
+        let normalized_transformed_angle_score = (transformed_angle_score - 0)/(smoothing_factor * 100 * 100 - 0) * 100;
+
+        all_angle_scores[angle_name] = normalized_transformed_angle_score;
+        total_score += normalized_transformed_angle_score * raw_weight;
     }
+    // Normalize the total score by the sum of the raw weights
+    const sum_of_raw_weights = Object.values(angles_to_consider).reduce((sum, angle) => sum + angle.raw_weight, 0);
+    total_score /= sum_of_raw_weights;
 
     all_angle_scores["total"] = total_score;
 
@@ -224,7 +287,20 @@ function comparePosesByAngles2D(pose1: poseDetection.Pose, pose2: poseDetection.
 }
 
 function calculateAngleFromPoints(x1: number, y1: number, x2: number, y2: number, x3: number, y3: number) {
-    const angle = Math.atan2(y2 - y1, x2 - x1) - Math.atan2(y3 - y1, x3 - x1);
+    let angle = Math.atan2(y1 - y2, x1 - x2) - Math.atan2(y3 - y2, x3 - x2);
+
+    // Add or subtract 2*pi's until the angle is between 0 and 2*pi
+    while(angle < 0) {
+        angle += 2 * Math.PI;
+    }
+    while(angle > 2 * Math.PI) {
+        angle -= 2 * Math.PI;
+    }
+
+    if(angle > Math.PI) {
+        angle = 2 * Math.PI - angle;
+    }
+
     return angle;
 }
 
@@ -294,14 +370,23 @@ export class SessionScorer {
         }
 
         // Don't score poses that happened before a pose that was already scored
-        if(closestPose.timestamp <= this.lastScoredTimestamp) {
+
+        // TODO: Uncomment this
+        // if(closestPose.timestamp <= this.lastScoredTimestamp) {
+        //     return this.current_window_average;
+        // }
+
+        if (poses.poses.length === 0 || closestPose.poses.length === 0) {
             return this.current_window_average;
         }
 
         // Score the pose
-        const score = comparePoses2D(poses.poses[0], closestPose.poses[0]);
+        const score = comparePosesByAngles2D(poses.poses[0], closestPose.poses[0])["total"];
         this.timestamp_scores.push([closestPose.timestamp, score]);
         this.lastScoredTimestamp = closestPose.timestamp;
+
+        // TODO: Remove this
+        return score;
 
         // Update the window average (should be the average of all the scored poses from the last scored timestamp to window_size milliseconds in the past)
         const window_start = closestPose.timestamp - this.window_size;
@@ -338,11 +423,11 @@ export class SessionScorer {
             }
         }
         
-        const window_scores = this.timestamp_scores.slice(startIndex, endIndex + 1);
+        const window_scores = this.timestamp_scores.slice(startIndex, endIndex + 1).map(score => score[1]);
         
         // Calculate window average from the filtered scores
         const window_average = window_scores.length > 0 
-            ? window_scores.reduce((sum, [_, score]) => sum + score, 0) / window_scores.length
+            ? window_scores.reduce((sum, score) => sum + score, 0) / window_scores.length
             : 0;
         this.current_window_average = window_average;
         return window_average;
