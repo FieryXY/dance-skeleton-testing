@@ -5,6 +5,7 @@ import type { Keypoint } from '@tensorflow-models/pose-detection';
 
 // Model and Detector Variables
 const SCORE_THRESHOLD = 0.3
+const PENALTY_FOR_OCCLUDED_KEYPOINT = -10
 const model: poseDetection.SupportedModels = poseDetection.SupportedModels.MoveNet;
 const modelType: string = poseDetection.movenet.modelType.SINGLEPOSE_THUNDER;
 var detector: poseDetection.PoseDetector | null = null;
@@ -124,7 +125,7 @@ function drawSkeleton(keypoints: poseDetection.Keypoint[], ctx: OffscreenCanvasR
      * @returns The root mean square distance between the two poses
      */
 function comparePoses2D(pose1: poseDetection.Pose, pose2: poseDetection.Pose) {
-    // Apply Procrusted Analysis (but only normalize with translation and scaling, not rotation)
+    // Apply Procrustes Analysis (but only normalize with translation and scaling, not rotation)
 
     let centroid1: number[] = [0, 0];
     let centroid2: number[] = [0, 0];
@@ -188,6 +189,11 @@ function comparePoses2D(pose1: poseDetection.Pose, pose2: poseDetection.Pose) {
 }
 
 function comparePosesByAngles2D(pose1: poseDetection.Pose, pose2: poseDetection.Pose): { [key: string]: number } {
+
+    // First, remove all keypoints that have a score less than the threshold
+    const pose1Points: Keypoint[] = pose1.keypoints.filter(kp => kp.score && kp.score >= SCORE_THRESHOLD);
+    const pose2Points: Keypoint[] = pose2.keypoints.filter(kp => kp.score && kp.score >= SCORE_THRESHOLD);
+
     const angles_to_consider: { [key: string]: {keypoints: string[], raw_weight: number} } = {
         "left_elbow": {
             "keypoints": ["left_shoulder", "left_elbow", "left_wrist"],
@@ -242,21 +248,23 @@ function comparePosesByAngles2D(pose1: poseDetection.Pose, pose2: poseDetection.
     let total_score = 0;
 
     // Store the scores for each angle. The name for each angle is the name of the second keypoint of the angle
-    let all_angle_scores: { [key: string]: number } = {};
+    let all_angle_scores: Record<string, number> = {};
 
     // Calculate the angle between the three points for each angle in the list
     for(const angle_name in angles_to_consider) {
         const angle = angles_to_consider[angle_name].keypoints;
         const raw_weight = angles_to_consider[angle_name].raw_weight;
-        const kp1_one = pose1.keypoints.find(kp => kp.name == angle[0]);
-        const kp1_two = pose1.keypoints.find(kp => kp.name == angle[1]);
-        const kp1_three = pose1.keypoints.find(kp => kp.name == angle[2]);
+        const kp1_one = pose1Points.find(kp => kp.name == angle[0]);
+        const kp1_two = pose1Points.find(kp => kp.name == angle[1]);
+        const kp1_three = pose1Points.find(kp => kp.name == angle[2]);
 
-        const kp2_one = pose2.keypoints.find(kp => kp.name == angle[0]);
-        const kp2_two = pose2.keypoints.find(kp => kp.name == angle[1]);
-        const kp2_three = pose2.keypoints.find(kp => kp.name == angle[2]);
+        const kp2_one = pose2Points.find(kp => kp.name == angle[0]);
+        const kp2_two = pose2Points.find(kp => kp.name == angle[1]);
+        const kp2_three = pose2Points.find(kp => kp.name == angle[2]);
 
         if(!kp1_one || !kp1_two || !kp1_three || !kp2_one || !kp2_two || !kp2_three) {
+            all_angle_scores[angle_name] = PENALTY_FOR_OCCLUDED_KEYPOINT;
+            total_score += all_angle_scores[angle_name] * raw_weight;
             continue;
         }
 
@@ -305,6 +313,14 @@ function calculateAngleFromPoints(x1: number, y1: number, x2: number, y2: number
 }
 
 // Scoring Class
+
+
+export interface ScoredPose {
+    originalTimestamp: number;
+    webcamTimestamp: number;
+    scores: Record<string, number>;
+}
+
 /**
  * Class that handles all the scoring logic for a dance session.
  * 
@@ -316,7 +332,7 @@ export class SessionScorer {
     private levelData: LevelData;
     private lastScoredTimestamp: number;
     private window_size: number;
-    private timestamp_scores: [number, number][];
+    private timestamp_scores: ScoredPose[];
     private current_window_average: number;
     private intervals: [number, number][];
 
@@ -334,10 +350,9 @@ export class SessionScorer {
      * @param poses - The next user pose to score
      * @returns The current window average score
      */
-    consumePose(poses: TimestampedPoses) {
+    consumePose(poses: TimestampedPoses, originalTimestamp: number) {
         // Find the pose in the level data that is closest to the pose in terms of timestamp
         if(this.levelData.pose_data.length == 0) {
-            console.log("No level data");
             return this.current_window_average;
         }
 
@@ -350,13 +365,13 @@ export class SessionScorer {
             const mid = Math.floor((left + right) / 2);
             const midPose = this.levelData.pose_data[mid];
             
-            if (Math.abs(midPose.timestamp - poses.timestamp) < Math.abs(closestPose.timestamp - poses.timestamp)) {
+            if (Math.abs(midPose.timestamp - originalTimestamp) < Math.abs(closestPose.timestamp - originalTimestamp)) {
                 closestPose = midPose;
             }
             
-            if (midPose.timestamp < poses.timestamp) {
+            if (midPose.timestamp < originalTimestamp) {
                 left = mid + 1;
-            } else if (midPose.timestamp > poses.timestamp) {
+            } else if (midPose.timestamp > originalTimestamp) {
                 right = mid - 1;
             } else {
                 // Exact match found
@@ -369,9 +384,7 @@ export class SessionScorer {
             return this.current_window_average;
         }
 
-        // Don't score poses that happened before a pose that was already scored
-
-        // TODO: Uncomment this
+        // // Don't score poses that happened before a pose that was already scored
         // if(closestPose.timestamp <= this.lastScoredTimestamp) {
         //     return this.current_window_average;
         // }
@@ -381,56 +394,26 @@ export class SessionScorer {
         }
 
         // Score the pose
-        const score = comparePosesByAngles2D(poses.poses[0], closestPose.poses[0])["total"];
-        this.timestamp_scores.push([closestPose.timestamp, score]);
+        const score = comparePosesByAngles2D(poses.poses[0], closestPose.poses[0]);
+        // Current behavior is that for each pose in the original level, we keep the most recent score from the webcam
+        this.timestamp_scores = this.timestamp_scores.filter(score_pair => score_pair.originalTimestamp != closestPose.timestamp)
+        // Insert [closestPose.timestamp, score] into timestamp_scores in sorted order by timestamp
+        let insertIdx = 0;
+        let l = 0, r = this.timestamp_scores.length - 1;
+        while (l <= r) {
+            const mid = Math.floor((l + r) / 2);
+            if (this.timestamp_scores[mid].originalTimestamp < closestPose.timestamp) {
+                l = mid + 1;
+            } else {
+                r = mid - 1;
+            }
+        }
+        insertIdx = l;
+        this.timestamp_scores.splice(insertIdx, 0, {originalTimestamp: closestPose.timestamp, webcamTimestamp: poses.timestamp, scores: score});
         this.lastScoredTimestamp = closestPose.timestamp;
+        this.current_window_average = score["total"];
 
-        // TODO: Remove this
-        return score;
-
-        // Update the window average (should be the average of all the scored poses from the last scored timestamp to window_size milliseconds in the past)
-        const window_start = closestPose.timestamp - this.window_size;
-        const window_end = closestPose.timestamp;
-        
-        // Filter timestamp_scores to get scores within the window
-        // Binary search to find the start index of the window
-        left = 0;
-        right = this.timestamp_scores.length - 1;
-        let startIndex = 0;
-        
-        while (left <= right) {
-            const mid = Math.floor((left + right) / 2);
-            if (this.timestamp_scores[mid][0] >= window_start) {
-                startIndex = mid;
-                right = mid - 1;
-            } else {
-                left = mid + 1;
-            }
-        }
-        
-        // Binary search to find the end index of the window
-        left = startIndex;
-        right = this.timestamp_scores.length - 1;
-        let endIndex = startIndex;
-        
-        while (left <= right) {
-            const mid = Math.floor((left + right) / 2);
-            if (this.timestamp_scores[mid][0] <= window_end) {
-                endIndex = mid;
-                left = mid + 1;
-            } else {
-                right = mid - 1;
-            }
-        }
-        
-        const window_scores = this.timestamp_scores.slice(startIndex, endIndex + 1).map(score => score[1]);
-        
-        // Calculate window average from the filtered scores
-        const window_average = window_scores.length > 0 
-            ? window_scores.reduce((sum, score) => sum + score, 0) / window_scores.length
-            : 0;
-        this.current_window_average = window_average;
-        return window_average;
+        return score["total"];
     }
 
     /**
@@ -438,17 +421,39 @@ export class SessionScorer {
      * @returns An array of scores for each interval
      */
     computeIntervalScores() {
-        let interval_scores: number[] = [];
+        let interval_scores: Record<string, number>[] = [];
         for(const interval of this.intervals) {
             const start = interval[0];
             const end = interval[1];
-            const window_scores = this.timestamp_scores.filter(([timestamp, _]) => timestamp >= start && timestamp <= end);
-            const window_average = window_scores.length > 0 
-                ? window_scores.reduce((sum, [_, score]) => sum + score, 0) / window_scores.length
-                : 0;
+            const window_scores = this.timestamp_scores.filter(score => score.originalTimestamp >= start && score.originalTimestamp <= end);
+            let window_average: Record<string, number> = {};
+            if (window_scores.length > 0) {
+                // window_scores is an array of score objects (dictionaries)
+                // Collect all keys
+                const allKeys = new Set<string>();
+                window_scores.forEach(scoreObj => {
+                    Object.keys(scoreObj.scores).forEach(key => allKeys.add(key));
+                });
+                // For each key, compute the average
+                allKeys.forEach(key => {
+                    let sum = 0;
+                    let count = 0;
+                    window_scores.forEach(scoreObj => {
+                        if (scoreObj.scores.hasOwnProperty(key)) {
+                            sum += scoreObj.scores[key];
+                            count += 1;
+                        }
+                    });
+                    window_average[key] = count > 0 ? sum / count : 0;
+                });
+            }
             interval_scores.push(window_average);
         }
         return interval_scores;
+    }
+
+    getTimestampScores() {
+        return this.timestamp_scores;
     }
         
 }

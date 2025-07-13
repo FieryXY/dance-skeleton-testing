@@ -1,4 +1,5 @@
 import * as poseDetection from '@tensorflow-models/pose-detection';
+import type { ScoredPose } from '~/skeleton-viewer/utils';
 const BackendURL = import.meta.env.REACT_APP_BACKEND_URL;
 
 export interface LevelData {
@@ -15,6 +16,20 @@ export interface TimestampedPoses {
 export interface LevelCreationData {
     title: string,
     intervals: number[][],
+}
+
+export interface ProcessedFeedbackRecommendation {
+    title: string;
+    description: string;
+    startTimestamp?: number;
+    endTimestamp?: number;
+    mappedStartTimestamp?: number;
+    mappedEndTimestamp?: number;
+}
+
+export interface FeedbackResponse {
+    dialogHeader: string;
+    recommendations: ProcessedFeedbackRecommendation[];
 }
 
 class Endpoints {
@@ -73,6 +88,41 @@ class Endpoints {
             
             const text = await response.text();
             return text;
+        })
+        .catch(error => {
+            console.error("Error creating level:", error);
+            throw error;
+        });
+    }
+
+    getFeedback = (objectId: string, video: File, startTimestamp: number, endTimestamp: number, poses: ScoredPose[], average_scores: Record<string, number>): Promise<FeedbackResponse> => {
+        const formData = new FormData();
+        formData.append("video", video);
+
+        const jsonData = {
+            startTimestamp: startTimestamp,
+            endTimestamp: endTimestamp,
+            scoreData: average_scores,
+            timestampMappings: poses.map(pose => ({
+                originalTimestamp: pose.originalTimestamp,
+                mappedTimestamp: pose.webcamTimestamp,
+            }))
+        }
+
+        formData.append("data", JSON.stringify(jsonData));
+
+        return fetch(`${BackendURL}/levels/getFeedback/${objectId}`, {
+            method: "POST",
+            body: formData,
+        })
+        .then(async response => {
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Network response was not ok: ${errorText}`);
+            }
+            
+            const text = await response.json();
+            return text as FeedbackResponse;
         })
         .catch(error => {
             console.error("Error creating level:", error);

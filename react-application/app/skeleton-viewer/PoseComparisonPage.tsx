@@ -27,6 +27,8 @@ export default function PoseComparisonPage() {
   const [customEnd, setCustomEnd] = useState<number | null>(null);
   // Ref to keep latest interactionMode value inside callbacks
   const interactionModeRef = useRef<"preview" | "try" | null>(null);
+  const webcamMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const webcamRecordingStartTimestampRef = useRef<number | null>(null);
 
   // Keep ref in sync with state
   useEffect(() => {
@@ -35,16 +37,18 @@ export default function PoseComparisonPage() {
 
   // Function to handle webcam pose reporting
   const handleWebcamPose = (data: TimestampedPoses) => {
-    data.timestamp = (videoRef.current?.currentTime ?? 0) * 1000;
+    const originalTimestamp = (videoRef.current?.currentTime ?? 0) * 1000;
     setWebcamPose(prev => [...prev, data]);
-    if (scorerRef.current && interactionModeRef.current === "try") {
-      const score = scorerRef.current.consumePose(data);
+    if (scorerRef.current && interactionModeRef.current === "try" && webcamRecordingStartTimestampRef.current && webcamMediaRecorderRef.current) {
+      data.timestamp = Date.now() - webcamRecordingStartTimestampRef.current;
+      const score = scorerRef.current.consumePose(data, originalTimestamp);
       if (typeof score === "number") {
         setWindowScore(score);
       }
     }
   };
 
+  // Fetch level data and associated annotated video
   const handleFetch = async () => {
     if (!objectId) return;
     try {
@@ -54,7 +58,7 @@ export default function PoseComparisonPage() {
       ]);
       setAnnotatedVideoUrl(videoUrl);
       setLevelData(level);
-      scorerRef.current = new SessionScorer(level, 500, level.intervals.map(interval => [interval[0], interval[1]]));
+      scorerRef.current = null;
     } catch (err) {
       alert("Failed to fetch video or level data");
       console.error(err);
@@ -88,11 +92,11 @@ export default function PoseComparisonPage() {
     video.addEventListener("timeupdate", handleTimeUpdate);
     timeUpdateListenerRef.current = handleTimeUpdate;
 
-    // Start playback (ensure play even if already playing to reset)
+    // Start playback
     video.play();
   };
 
-  // Existing helper: play segment by interval index
+  // Helper: play segment by interval index
   const startVideoSegment = (intervalIdx: number) => {
     if (!levelData) return;
     const [startMs, endMs] = levelData.intervals[intervalIdx];
@@ -100,7 +104,7 @@ export default function PoseComparisonPage() {
   };
 
   // Called whenever an interval finishes (preview or try)
-  const handleIntervalEnd = () => {
+  const handleIntervalEnd = async () => {
     if (interactionMode === "try") {
       // Compile session data
       const sessionSummary = {
@@ -110,7 +114,50 @@ export default function PoseComparisonPage() {
         endTimestamp: activeIntervalIndex !== null ? levelData?.intervals[activeIntervalIndex][1] : customEnd,
         custom: customStart !== null && customEnd !== null && customStart < customEnd,
       };
-      console.log("Session Summary", sessionSummary);
+
+      if(!scorerRef.current) {
+        console.error("Scorer is not initialized");
+        cancelInterval();
+        return;
+      }
+
+      if(!webcamMediaRecorderRef.current) {
+        console.error("Webcam media recorder is not initialized");
+        cancelInterval();
+        return;
+      }
+
+      if(typeof sessionSummary.beginTimestamp !== "number" || typeof sessionSummary.endTimestamp !== "number") {
+        console.error("Begin or end timestamp is not set");
+        cancelInterval();
+        return;
+      }
+
+      if(!sessionSummary.intervalScores || sessionSummary.intervalScores.length === 0) {
+        console.error("Interval scores are not set");
+        cancelInterval();
+        return;
+      }
+
+      // Get MP4 blob of webcam recording
+      webcamMediaRecorderRef.current.requestData();
+
+      const file = await new Promise<File>((res, rej) => {
+        if(!webcamMediaRecorderRef.current) {
+          console.error("Blob to file conversion failed: webcam media recorder is not initialized");
+          rej(new Error("Webcam media recorder is not initialized"));
+          return;
+        }
+        webcamMediaRecorderRef.current.addEventListener('dataavailable',
+          e => res(new File([e.data], 'attempt.webm', { type: e.data.type })),
+          { once: true }
+        );
+        webcamMediaRecorderRef.current.stop();
+      });
+
+      const feedback = await endpoints.getFeedback(objectId, file, sessionSummary.beginTimestamp, sessionSummary.endTimestamp, scorerRef.current.getTimestampScores() ?? [], sessionSummary.intervalScores[0]);
+
+      console.log("Feedback", feedback);
     }
 
     // Show post-interval options
@@ -128,15 +175,22 @@ export default function PoseComparisonPage() {
   };
 
   // Try It button handler
-  const tryInterval = (idx: number) => {
+  const tryInterval = async (idx: number) => {
     if (!levelData) return;
+
     setActiveIntervalIndex(idx);
     setInteractionMode("try");
     setAfterInterval(false);
 
     // Reset webcam poses and scorer
     setWebcamPose([]);
-    scorerRef.current = new SessionScorer(levelData, 500, levelData.intervals.map(interval => [interval[0], interval[1]]));
+    scorerRef.current = new SessionScorer(levelData, 500, [[levelData.intervals[idx][0], levelData.intervals[idx][1]]]);
+
+    // Start webcam recording
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    webcamMediaRecorderRef.current = new MediaRecorder(stream, {mimeType: "video/webm"});
+    webcamMediaRecorderRef.current.start();
+    webcamRecordingStartTimestampRef.current = Date.now();
 
     // Start countdown
     setCountdown(3);
@@ -153,6 +207,12 @@ export default function PoseComparisonPage() {
     // Allow user to control full video again
     if (videoRef.current) {
       videoRef.current.pause();
+    }
+    if (webcamMediaRecorderRef.current) {
+      webcamMediaRecorderRef.current.stop();
+      webcamMediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      webcamMediaRecorderRef.current = null;
+      webcamRecordingStartTimestampRef.current = null;
     }
   };
 
@@ -194,7 +254,7 @@ export default function PoseComparisonPage() {
     playSegment(customStart, customEnd);
   };
 
-  const tryCustom = () => {
+  const tryCustom = async () => {
     if (!levelData || customStart === null || customEnd === null || customStart >= customEnd) return;
     setActiveIntervalIndex(null);
     setInteractionMode("try");
@@ -202,6 +262,12 @@ export default function PoseComparisonPage() {
 
     setWebcamPose([]);
     scorerRef.current = new SessionScorer(levelData, 500, [[customStart, customEnd]]);
+
+    // Start webcam recording
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    webcamMediaRecorderRef.current = new MediaRecorder(stream, {mimeType: "video/webm"});
+    webcamMediaRecorderRef.current.start();
+    webcamRecordingStartTimestampRef.current = Date.now();
 
     setCountdown(3);
   };

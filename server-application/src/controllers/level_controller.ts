@@ -4,20 +4,22 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import ffmpeg from 'fluent-ffmpeg';
-import { CanvasRenderingContext2D, createCanvas, loadImage } from 'canvas';
+import { createCanvas, loadImage } from 'canvas';
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import * as tf from '@tensorflow/tfjs-node';
-import { LevelSchema } from '../frontend_models/level_schemas.js';
-import validateSchema, { validateID } from '../frontend_models/validate_schema.js';
+import { FeedbackRequest, FeedbackRequestSchema, FeedbackResponse, GeminiFeedbackRecommendation, GeminiFeedbackResponse, GeminiFeedbackResponseSchema, LevelSchema, ProcessedFeedbackRecommendation } from '../frontend_models/level_schemas.js';
+import { manualValidateSchema, validateID } from '../frontend_models/validate_schema.js';
 import Level from '../db_models/level_model.js';
 import mongoose from 'mongoose';
-import { Readable } from 'stream';
-import { isEqualsGreaterThanToken } from 'typescript';
+import { Content, GoogleGenAI, Type } from "@google/genai";
+import temp from 'temp';
+import Constants from '../constants.js';
+import { drawResults, getTimestampMapping, getVideoInfo } from './level_utils.js';
+
 
 const router = express.Router();
 const upload = multer({ dest: 'uploads/' });
 
-const SCORE_THRESHOLD = 0.3;
 const MODEL = poseDetection.SupportedModels.MoveNet;
 const MODEL_TYPE = poseDetection.movenet.modelType.SINGLEPOSE_THUNDER;
 
@@ -44,7 +46,7 @@ router.post('/create', upload.single('video'), async (req, res) => {
   try {
     // Parse data JSON
     const dataJSON = JSON.parse(req.body.data);
-    if(!validateSchema(dataJSON)) {
+    if(!manualValidateSchema(LevelSchema, dataJSON)) {
       res.status(400).send("Invalid JSON data uploaded for level");
       return;
     }
@@ -187,64 +189,214 @@ router.get('/getAnnotatedVideo/:id', async (req, res) => {
   }
 });
 
-function drawResults(poses: poseDetection.Pose[], ctx: CanvasRenderingContext2D, model: poseDetection.SupportedModels): void {
-  for (const pose of poses) {
-    drawKeypoints(pose.keypoints, ctx);
-    drawSkeleton(pose.keypoints, ctx, model);
+router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
+  if (!req.file) {
+    res.status(400).send('No video file uploaded for level');
+    return;
   }
-}
 
-function drawKeypoints(keypoints: poseDetection.Keypoint[], ctx: CanvasRenderingContext2D) {
-  ctx.fillStyle = 'Red';
-  ctx.strokeStyle = 'White';
-  ctx.lineWidth = 2;
+  const inputPath = req.file.path;
 
-  for (const keypoint of keypoints) {
-    if (keypoint.score && keypoint.score >= SCORE_THRESHOLD) {
-      ctx.beginPath();
-      ctx.arc(keypoint.x, keypoint.y, 4, 0, 2 * Math.PI);
-      ctx.fill();
-      ctx.stroke();
-    }
-  }
-}
-
-function drawSkeleton(keypoints: poseDetection.Keypoint[], ctx: CanvasRenderingContext2D, model: poseDetection.SupportedModels) {
-  ctx.strokeStyle = '#00ff00';
-  ctx.lineWidth = 2;
-
-  const adjacentPairs = poseDetection.util.getAdjacentPairs(model);
-
-  for (const [i, j] of adjacentPairs) {
-    const kp1 = keypoints[i];
-    const kp2 = keypoints[j];
-
-    if(!kp1.score || !kp2.score) {
-      continue;
+  try {
+    const level = await Level.findById(req.params.id);
+    if(!level) {
+      res.status(404).send('Level not found');
+      return;
     }
 
-    if (kp1.score >= SCORE_THRESHOLD && kp2.score >= SCORE_THRESHOLD) {
-      ctx.beginPath();
-      ctx.moveTo(kp1.x, kp1.y);
-      ctx.lineTo(kp2.x, kp2.y);
-      ctx.stroke();
+    const dataJSON = JSON.parse(req.body.data);
+    if(!manualValidateSchema(FeedbackRequestSchema, dataJSON)) {
+      res.status(400).send("Invalid JSON data uploaded for feedback request");
+      return;
     }
-  }
-}
 
-function getVideoInfo(inputPath: string): Promise<{fps: number, width: number | undefined, height:number | undefined}> {
-  return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(inputPath, (err, metadata) => {
-      if (err) return reject(err);
-      const videoStream = metadata.streams.find(s => s.codec_type === 'video');
-      if (!videoStream) return reject(new Error('No video stream found'));
-      if(!videoStream.avg_frame_rate) return reject(new Error('Average frame rate not given by ffprobe'))
-
-      const [num, den] = videoStream.avg_frame_rate.split('/').map(Number);
-      const fps = num / den;
-      resolve({ fps, width: videoStream.width, height: videoStream.height });
+    // Convert the uploaded video to mp4
+    const tempUploadedPath = temp.path({ suffix: '.mp4' });
+    await new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .output(tempUploadedPath)
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
     });
-  });
-}
+
+    // Get the base64 encoding for the uploaded video
+    const videoBase64 = fs.readFileSync(tempUploadedPath, { encoding: 'base64' });
+
+    const startTimestamp = dataJSON.startTimestamp;
+    const endTimestamp = dataJSON.endTimestamp;
+    const scoreData: Record<string, number> = dataJSON.scoreData;
+
+    if(!mongoose.connection.db) {
+      res.status(500).send("Error connecting with database");
+      return;
+    }
+
+    const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db);
+
+    // Extract only the portion of the video from beginningTimestamp to endTimestamp (in ms)
+    const originalVideoBuffer: Buffer = await new Promise((resolve, reject) => {
+      const stream = bucket.openDownloadStreamByName("ORIGINAL_" + req.params.id);
+      const chunks: Buffer[] = [];
+      stream.on('data', (chunk) => chunks.push(chunk));
+      stream.on('end', () => resolve(Buffer.concat(chunks)));
+      stream.on('error', reject);
+    });
+
+    // Write buffer to a temp file
+    const tempInput = temp.path({ suffix: '.mp4' });
+    const tempOutput = temp.path({ suffix: '.mp4' });
+    fs.writeFileSync(tempInput, originalVideoBuffer);
+
+    // Convert ms to seconds for ffmpeg
+    const startSec = startTimestamp / 1000;
+    const durationSec = (endTimestamp - startTimestamp) / 1000;
+
+    await new Promise((resolve, reject) => {
+      ffmpeg(tempInput)
+        .setStartTime(startSec)
+        .setDuration(durationSec)
+        .output(tempOutput)
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
+    });
+
+    // Read the trimmed video and encode to base64
+    const trimmedVideoBuffer = fs.readFileSync(tempOutput);
+    const originalVideoBase64 = trimmedVideoBuffer.toString('base64');
+
+    // Clean up temp files
+    temp.cleanupSync();
+
+    const ai = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY,
+    });
+
+    const contents: Content[] = [
+      {
+        role: "user",
+        parts: [
+          {
+            inlineData: {
+              mimeType: "video/mp4",
+              data: originalVideoBase64 as string
+            }
+          },
+          {
+            inlineData: {
+              mimeType: "video/mp4",
+              data: videoBase64 as string
+            }
+          },
+          {
+            text: Constants.MAIN_FEEDBACK_PROMPT + "\n\n" + JSON.stringify(scoreData)
+          }
+        ]
+      }
+    ];
+
+    const response = await ai.models.generateContent({
+      model: "gemini-1.5-flash",
+      contents: contents,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            description: {
+              type: Type.STRING,
+            },
+            recommendations: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: {
+                    type: Type.STRING,
+                  },
+                  description: {
+                    type: Type.STRING,
+                  },
+                  startTimestamp: {
+                    type: Type.NUMBER,
+                  },
+                  endTimestamp: {
+                    type: Type.NUMBER,
+                  },
+                },
+                required: ["title", "description"],
+                propertyOrdering: ["title", "description", "startTimestamp", "endTimestamp"],
+                additionalProperties: false,
+              }
+            }
+          },
+          required: ["description", "recommendations"],
+          additionalProperties: false,
+        }
+      }
+    });
+
+    if(!response.text) {
+      res.status(500).send("Error generating feedback");
+      return;
+    }
+
+    const geminiResponseJSON = JSON.parse(response.text) as GeminiFeedbackResponse;
+
+    if(!manualValidateSchema(GeminiFeedbackResponseSchema, geminiResponseJSON)) {
+      res.status(500).send("Error generating feedback");
+      return;
+    }
+
+    const processedRecommendations: ProcessedFeedbackRecommendation[] = geminiResponseJSON.recommendations.map((recommendation: GeminiFeedbackRecommendation) => {
+      
+      if(!recommendation.startTimestamp || !recommendation.endTimestamp) {
+        return recommendation;
+      }
+
+      const mappedStartTimestamp = getTimestampMapping(recommendation.startTimestamp, dataJSON);
+      const mappedEndTimestamp = getTimestampMapping(recommendation.endTimestamp, dataJSON);
+
+      if(!mappedStartTimestamp || !mappedEndTimestamp) {
+        // Return recommendation without startTimestamp and endTimestamp
+        const { startTimestamp, endTimestamp, ...baseRecommendation } = recommendation;
+        return baseRecommendation;
+      }
+
+      return {
+        ...recommendation,
+        mappedStartTimestamp,
+        mappedEndTimestamp,
+      };
+    });
+
+    const responseJSON: FeedbackResponse = {
+      dialogHeader: "Unknown",
+      description: geminiResponseJSON.description,
+      recommendations: processedRecommendations,
+    };
+
+    if("total" in scoreData) {
+      const totalScore = scoreData.total;
+      if(totalScore >= Constants.GREAT_THRESHOLD) {
+        responseJSON.dialogHeader = "Great!";
+      } else if(totalScore >= Constants.GOOD_THRESHOLD) {
+        responseJSON.dialogHeader = "Good!";
+      } else if(totalScore >= Constants.OKAY_THRESHOLD) {
+        responseJSON.dialogHeader = "Okay";
+      } else {
+        responseJSON.dialogHeader = "Needs Improvement";
+      }
+    }
+
+    res.json(responseJSON);
+
+  } catch (err) {
+    res.status(500).send('Failed to process video');
+  }
+});
+
+
 
 export { router as LevelController };

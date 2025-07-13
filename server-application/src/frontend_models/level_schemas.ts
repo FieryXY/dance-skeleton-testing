@@ -5,6 +5,43 @@ interface FrontendLevel {
     intervals: number[][]
 }
 
+interface FeedbackRequest {
+    startTimestamp: number;
+    endTimestamp: number;
+    scoreData: Record<string, number>;
+    timestampMappings: {
+        originalTimestamp: number;
+        mappedTimestamp: number;
+    }[];
+}
+
+interface GeminiFeedbackRecommendation {
+    title: string;
+    description: string;
+    startTimestamp?: number;
+    endTimestamp?: number;
+}
+
+interface ProcessedFeedbackRecommendation {
+    title: string;
+    description: string;
+    startTimestamp?: number;
+    endTimestamp?: number;
+    mappedStartTimestamp?: number;
+    mappedEndTimestamp?: number;
+}
+
+interface GeminiFeedbackResponse {
+    description: string;
+    recommendations: GeminiFeedbackRecommendation[];
+}
+
+interface FeedbackResponse {
+    dialogHeader: string;
+    description: string;
+    recommendations: ProcessedFeedbackRecommendation[];
+}
+
 const LevelSchema: JSONSchemaType<FrontendLevel> = {
     type: "object",
     properties: {
@@ -21,4 +58,55 @@ const LevelSchema: JSONSchemaType<FrontendLevel> = {
     additionalProperties: false
 }
 
-export { LevelSchema }
+const FeedbackRequestSchema: JSONSchemaType<FeedbackRequest> = {
+    type: "object",
+    properties: {
+        startTimestamp: { type: "number" },
+        endTimestamp: { type: "number" },
+        scoreData: {
+            type: "object",
+            propertyNames: { type: "string" },
+            required: []
+        },
+        timestampMappings: {
+            type: "array",
+            items: {
+                type: "object",
+                properties: {
+                    originalTimestamp: { type: "number" },
+                    mappedTimestamp: { type: "number" },
+                },
+                required: ["originalTimestamp", "mappedTimestamp"],
+                additionalProperties: false,
+            }
+        },
+    },
+    required: ["startTimestamp", "endTimestamp", "scoreData", "timestampMappings"],
+    additionalProperties: false,
+}
+
+const GeminiFeedbackResponseSchema: JSONSchemaType<GeminiFeedbackResponse> = {
+    type: "object",
+    properties: {
+        description: { type: "string" },
+        recommendations: {
+            type: "array",
+            items: {
+                type: "object",
+                properties: {
+                    title: { type: "string" },
+                    description: { type: "string" },
+                    startTimestamp: { type: "number", nullable: true },
+                    endTimestamp: { type: "number", nullable: true },
+                },
+                required: ["title", "description"],
+                additionalProperties: false,
+            },
+        }
+    },
+    required: ["description", "recommendations"],
+    additionalProperties: false,
+}
+
+export { LevelSchema, FeedbackRequestSchema, GeminiFeedbackResponseSchema }
+export type { FeedbackResponse, FeedbackRequest, ProcessedFeedbackRecommendation, GeminiFeedbackRecommendation, GeminiFeedbackResponse }

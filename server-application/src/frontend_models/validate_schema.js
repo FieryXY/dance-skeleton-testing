@@ -13,6 +13,10 @@ function validateSchema(schema) {
         next();
     };
 }
+function manualValidateSchema(schema, data) {
+    const validator = ajv.compile(schema);
+    return validator(data);
+}
 function validateID() {
     return (req, res, next) => {
         if (req.params.id && !isIDValid(req.params.id)) {
@@ -35,4 +39,5 @@ function isIDValid(idString) {
 }
 export { isIDValid };
 export { validateID };
+export { manualValidateSchema };
 export default validateSchema;

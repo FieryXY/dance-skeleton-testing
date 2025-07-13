@@ -17,6 +17,11 @@ function validateSchema<T>(schema: JSONSchemaType<T>): RequestHandler {
     };
 }
 
+function manualValidateSchema<T>(schema: JSONSchemaType<T>, data: any): boolean {
+    const validator = ajv.compile(schema);
+    return validator(data);
+}
+
 function validateID(): RequestHandler {
     return (req, res, next) => {
         if(req.params.id && !isIDValid(req.params.id)) {
@@ -42,5 +47,7 @@ function isIDValid(idString: string): boolean {
 export { isIDValid };
 
 export { validateID };
+
+export { manualValidateSchema };
 
 export default validateSchema;
