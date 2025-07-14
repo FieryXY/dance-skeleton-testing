@@ -17,13 +17,11 @@ I've also included some scores on a scale of 1 to 100 on how closely each joint 
     // If we can't find a mapping from original timestamp to user timestamp within this range of the timestamp that Gemini provides,
     // we won't provide timestamps for that recommendation
     MAX_TIMESTAMP_MAPPING_DIFF: 1000,
-
     // These are the score thresholds to determine which message to show the user based on their score
     GREAT_THRESHOLD: 90,
     GOOD_THRESHOLD: 70,
     OKAY_THRESHOLD: 50,
     BAD_THRESHOLD: 30,
-
     // This is the prompt used to generate mini feedback
     MINI_FEEDBACK_PROMPT: `
         You are a private dance instructor. Earlier, you gave the user some feedback on a particular part of a dance. You now
@@ -39,7 +37,5 @@ I've also included some scores on a scale of 1 to 100 on how closely each joint 
 
         Below is the original feedback you gave the user:
     `
-
-}
-
+};
 export default Constants;

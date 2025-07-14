@@ -15,6 +15,17 @@ interface FeedbackRequest {
     }[];
 }
 
+interface MiniFeedbackRequest {
+    startTimestamp: number;
+    endTimestamp: number;
+    originalRecommendation: string;
+}
+
+interface GeminiMiniFeedbackResponse {
+    description: string;
+    sufficient: boolean;
+}
+
 interface GeminiFeedbackRecommendation {
     title: string;
     description: string;
@@ -85,6 +96,16 @@ const FeedbackRequestSchema: JSONSchemaType<FeedbackRequest> = {
     additionalProperties: false,
 }
 
+const MiniFeedbackRequestSchema: JSONSchemaType<MiniFeedbackRequest> = {
+    type: "object",
+    properties: {
+        startTimestamp: { type: "number" },
+        endTimestamp: { type: "number" },
+        originalRecommendation: { type: "string" },
+    },
+    required: ["startTimestamp", "endTimestamp", "originalRecommendation"],
+    additionalProperties: false,
+}
 const GeminiFeedbackResponseSchema: JSONSchemaType<GeminiFeedbackResponse> = {
     type: "object",
     properties: {
@@ -108,5 +129,15 @@ const GeminiFeedbackResponseSchema: JSONSchemaType<GeminiFeedbackResponse> = {
     additionalProperties: false,
 }
 
-export { LevelSchema, FeedbackRequestSchema, GeminiFeedbackResponseSchema }
-export type { FeedbackResponse, FeedbackRequest, ProcessedFeedbackRecommendation, GeminiFeedbackRecommendation, GeminiFeedbackResponse }
+const GeminiMiniFeedbackResponseSchema: JSONSchemaType<GeminiMiniFeedbackResponse> = {
+    type: "object",
+    properties: {
+        description: { type: "string" },
+        sufficient: { type: "boolean" },
+    },
+    required: ["description", "sufficient"],
+    additionalProperties: false,
+}
+
+export { LevelSchema, FeedbackRequestSchema, GeminiFeedbackResponseSchema, MiniFeedbackRequestSchema, GeminiMiniFeedbackResponseSchema }
+export type { FeedbackResponse, FeedbackRequest, ProcessedFeedbackRecommendation, GeminiFeedbackRecommendation, GeminiFeedbackResponse, MiniFeedbackRequest, GeminiMiniFeedbackResponse }

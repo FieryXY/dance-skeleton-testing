@@ -7,29 +7,23 @@ import ffmpeg from 'fluent-ffmpeg';
 import { createCanvas, loadImage } from 'canvas';
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import * as tf from '@tensorflow/tfjs-node';
-import { FeedbackRequestSchema, GeminiFeedbackResponseSchema, LevelSchema } from '../frontend_models/level_schemas.js';
+import { FeedbackRequestSchema, GeminiFeedbackResponseSchema, GeminiMiniFeedbackResponseSchema, LevelSchema, MiniFeedbackRequestSchema } from '../frontend_models/level_schemas.js';
 import { manualValidateSchema, validateID } from '../frontend_models/validate_schema.js';
 import Level from '../db_models/level_model.js';
 import mongoose from 'mongoose';
 import { GoogleGenAI, Type } from "@google/genai";
 import temp from 'temp';
+import Constants from '../constants.js';
+import { convertToMp4, drawResults, getTimestampMapping, getVideoInfo, prepareFeedbackBase64s } from './level_utils.js';
+import * as dotenv from 'dotenv';
 const router = express.Router();
 const upload = multer({ dest: 'uploads/' });
-const SCORE_THRESHOLD = 0.3;
+dotenv.config();
 const MODEL = poseDetection.SupportedModels.MoveNet;
 const MODEL_TYPE = poseDetection.movenet.modelType.SINGLEPOSE_THUNDER;
-const MAIN_FEEDBACK_PROMPT = `
-These two videos are for the same choreography. The first one is the actual choreography and the second one is a user's attempt to do the choreography. Please indicate the top 3 things the user can work on to improve in the choreography. If one of the things is specific to a certain part of the dance, please indicate the timestamp range in the original choreography video corresponding to that thing in your answer.
-
-Also, please provide a short summary of the user's performance in the choreography under the description field.
-
-I've also included some scores on a scale of 1 to 100 on how closely each joint angle in the user choreography corresponded to the original choreography below as a heuristic you can loosely refer to:
-`;
-const GREAT_THRESHOLD = 90;
-const GOOD_THRESHOLD = 70;
-const OKAY_THRESHOLD = 50;
-const BAD_THRESHOLD = 30;
-const MAX_TIMESTAMP_MAPPING_DIFF = 1000;
+const ai = new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY,
+});
 let detector = null;
 (async () => {
     await tf.ready();
@@ -166,6 +160,94 @@ router.get('/getAnnotatedVideo/:id', async (req, res) => {
         res.status(500).send('Error retrieving annotated video');
     }
 });
+router.post('/getMiniFeedback/:id', upload.fields([
+    { name: 'previousVideo', maxCount: 1 },
+    { name: 'video', maxCount: 1 },
+]), async (req, res) => {
+    var _a, _b, _c, _d;
+    if (!req.files) {
+        res.status(400).send('No video files uploaded for level');
+        return;
+    }
+    if (!('previousVideo' in req.files) || !('video' in req.files)) {
+        res.status(400).send('No video file uploaded for level');
+        return;
+    }
+    const previousVideoPath = (_b = (_a = req.files['previousVideo']) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.path;
+    const videoPath = (_d = (_c = req.files['video']) === null || _c === void 0 ? void 0 : _c[0]) === null || _d === void 0 ? void 0 : _d.path;
+    if (!previousVideoPath || !videoPath) {
+        res.status(400).send('No video file uploaded for level');
+        return;
+    }
+    try {
+        const dataJSON = JSON.parse(req.body.data);
+        if (!manualValidateSchema(MiniFeedbackRequestSchema, dataJSON)) {
+            res.status(400).send("Invalid JSON data uploaded for feedback request");
+            return;
+        }
+        const { originalVideoBase64, uploadedVideoBase64 } = await prepareFeedbackBase64s(req.params.id, videoPath, dataJSON.startTimestamp, dataJSON.endTimestamp);
+        const tempPreviousVideoPath = temp.path({ suffix: '.mp4' });
+        await convertToMp4(previousVideoPath, tempPreviousVideoPath);
+        const previousUploadedVideoBase64 = fs.readFileSync(tempPreviousVideoPath, { encoding: 'base64' });
+        const contents = [
+            {
+                role: "user",
+                parts: [
+                    {
+                        inlineData: {
+                            mimeType: "video/mp4",
+                            data: previousUploadedVideoBase64
+                        }
+                    },
+                    {
+                        inlineData: {
+                            mimeType: "video/mp4",
+                            data: uploadedVideoBase64
+                        }
+                    },
+                    {
+                        inlineData: {
+                            mimeType: "video/mp4",
+                            data: originalVideoBase64
+                        }
+                    },
+                    {
+                        text: Constants.MINI_FEEDBACK_PROMPT + "\n\n" + dataJSON.originalRecommendation
+                    }
+                ]
+            }
+        ];
+        const response = await ai.models.generateContent({
+            model: "gemini-1.5-flash",
+            contents: contents,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        sufficient: { type: Type.BOOLEAN },
+                        description: { type: Type.STRING },
+                    },
+                    required: ["sufficient", "description"],
+                    additionalProperties: false,
+                }
+            }
+        });
+        if (!response.text) {
+            res.status(500).send("Error generating feedback");
+            return;
+        }
+        const geminiResponseJSON = JSON.parse(response.text);
+        if (!manualValidateSchema(GeminiMiniFeedbackResponseSchema, geminiResponseJSON)) {
+            res.status(500).send("Error generating feedback");
+            return;
+        }
+        res.json(geminiResponseJSON);
+    }
+    catch (err) {
+        res.status(500).send('Failed to process video');
+    }
+});
 router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
     if (!req.file) {
         res.status(400).send('No video file uploaded for level');
@@ -183,57 +265,8 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
             res.status(400).send("Invalid JSON data uploaded for feedback request");
             return;
         }
-        // Convert the uploaded video to mp4
-        const tempUploadedPath = temp.path({ suffix: '.mp4' });
-        await new Promise((resolve, reject) => {
-            ffmpeg(inputPath)
-                .output(tempUploadedPath)
-                .on('end', resolve)
-                .on('error', reject)
-                .run();
-        });
-        // Get the base64 encoding for the uploaded video
-        const videoBase64 = fs.readFileSync(tempUploadedPath, { encoding: 'base64' });
-        const startTimestamp = dataJSON.startTimestamp;
-        const endTimestamp = dataJSON.endTimestamp;
         const scoreData = dataJSON.scoreData;
-        if (!mongoose.connection.db) {
-            res.status(500).send("Error connecting with database");
-            return;
-        }
-        const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db);
-        // Extract only the portion of the video from beginningTimestamp to endTimestamp (in ms)
-        const originalVideoBuffer = await new Promise((resolve, reject) => {
-            const stream = bucket.openDownloadStreamByName("ORIGINAL_" + req.params.id);
-            const chunks = [];
-            stream.on('data', (chunk) => chunks.push(chunk));
-            stream.on('end', () => resolve(Buffer.concat(chunks)));
-            stream.on('error', reject);
-        });
-        // Write buffer to a temp file
-        const tempInput = temp.path({ suffix: '.mp4' });
-        const tempOutput = temp.path({ suffix: '.mp4' });
-        fs.writeFileSync(tempInput, originalVideoBuffer);
-        // Convert ms to seconds for ffmpeg
-        const startSec = startTimestamp / 1000;
-        const durationSec = (endTimestamp - startTimestamp) / 1000;
-        await new Promise((resolve, reject) => {
-            ffmpeg(tempInput)
-                .setStartTime(startSec)
-                .setDuration(durationSec)
-                .output(tempOutput)
-                .on('end', resolve)
-                .on('error', reject)
-                .run();
-        });
-        // Read the trimmed video and encode to base64
-        const trimmedVideoBuffer = fs.readFileSync(tempOutput);
-        const originalVideoBase64 = trimmedVideoBuffer.toString('base64');
-        // Clean up temp files
-        temp.cleanupSync();
-        const ai = new GoogleGenAI({
-            apiKey: process.env.GEMINI_API_KEY,
-        });
+        const { originalVideoBase64, uploadedVideoBase64 } = await prepareFeedbackBase64s(req.params.id, inputPath, dataJSON.startTimestamp, dataJSON.endTimestamp);
         const contents = [
             {
                 role: "user",
@@ -247,11 +280,11 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
                     {
                         inlineData: {
                             mimeType: "video/mp4",
-                            data: videoBase64
+                            data: uploadedVideoBase64
                         }
                     },
                     {
-                        text: MAIN_FEEDBACK_PROMPT + "\n\n" + JSON.stringify(scoreData)
+                        text: Constants.MAIN_FEEDBACK_PROMPT + "\n\n" + JSON.stringify(scoreData)
                     }
                 ]
             }
@@ -309,8 +342,8 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
             if (!recommendation.startTimestamp || !recommendation.endTimestamp) {
                 return recommendation;
             }
-            const mappedStartTimestamp = getTimestampMapping(recommendation.startTimestamp, dataJSON);
-            const mappedEndTimestamp = getTimestampMapping(recommendation.endTimestamp, dataJSON);
+            const mappedStartTimestamp = getTimestampMapping(dataJSON.startTimestamp + recommendation.startTimestamp, dataJSON);
+            const mappedEndTimestamp = getTimestampMapping(dataJSON.startTimestamp + recommendation.endTimestamp, dataJSON);
             if (!mappedStartTimestamp || !mappedEndTimestamp) {
                 // Return recommendation without startTimestamp and endTimestamp
                 const { startTimestamp, endTimestamp, ...baseRecommendation } = recommendation;
@@ -320,6 +353,8 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
                 ...recommendation,
                 mappedStartTimestamp,
                 mappedEndTimestamp,
+                startTimestamp: dataJSON.startTimestamp + recommendation.startTimestamp,
+                endTimestamp: dataJSON.startTimestamp + recommendation.endTimestamp,
             };
         });
         const responseJSON = {
@@ -329,13 +364,13 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
         };
         if ("total" in scoreData) {
             const totalScore = scoreData.total;
-            if (totalScore >= GREAT_THRESHOLD) {
+            if (totalScore >= Constants.GREAT_THRESHOLD) {
                 responseJSON.dialogHeader = "Great!";
             }
-            else if (totalScore >= GOOD_THRESHOLD) {
+            else if (totalScore >= Constants.GOOD_THRESHOLD) {
                 responseJSON.dialogHeader = "Good!";
             }
-            else if (totalScore >= OKAY_THRESHOLD) {
+            else if (totalScore >= Constants.OKAY_THRESHOLD) {
                 responseJSON.dialogHeader = "Okay";
             }
             else {
@@ -345,91 +380,7 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
         res.json(responseJSON);
     }
     catch (err) {
-        res.status(500).send('Failed to process video');
+        res.status(500).send('Failed to process video: ' + err);
     }
 });
-function drawResults(poses, ctx, model) {
-    for (const pose of poses) {
-        drawKeypoints(pose.keypoints, ctx);
-        drawSkeleton(pose.keypoints, ctx, model);
-    }
-}
-function drawKeypoints(keypoints, ctx) {
-    ctx.fillStyle = 'Red';
-    ctx.strokeStyle = 'White';
-    ctx.lineWidth = 2;
-    for (const keypoint of keypoints) {
-        if (keypoint.score && keypoint.score >= SCORE_THRESHOLD) {
-            ctx.beginPath();
-            ctx.arc(keypoint.x, keypoint.y, 4, 0, 2 * Math.PI);
-            ctx.fill();
-            ctx.stroke();
-        }
-    }
-}
-function drawSkeleton(keypoints, ctx, model) {
-    ctx.strokeStyle = '#00ff00';
-    ctx.lineWidth = 2;
-    const adjacentPairs = poseDetection.util.getAdjacentPairs(model);
-    for (const [i, j] of adjacentPairs) {
-        const kp1 = keypoints[i];
-        const kp2 = keypoints[j];
-        if (!kp1.score || !kp2.score) {
-            continue;
-        }
-        if (kp1.score >= SCORE_THRESHOLD && kp2.score >= SCORE_THRESHOLD) {
-            ctx.beginPath();
-            ctx.moveTo(kp1.x, kp1.y);
-            ctx.lineTo(kp2.x, kp2.y);
-            ctx.stroke();
-        }
-    }
-}
-function getVideoInfo(inputPath) {
-    return new Promise((resolve, reject) => {
-        ffmpeg.ffprobe(inputPath, (err, metadata) => {
-            if (err)
-                return reject(err);
-            const videoStream = metadata.streams.find(s => s.codec_type === 'video');
-            if (!videoStream)
-                return reject(new Error('No video stream found'));
-            if (!videoStream.avg_frame_rate)
-                return reject(new Error('Average frame rate not given by ffprobe'));
-            const [num, den] = videoStream.avg_frame_rate.split('/').map(Number);
-            const fps = num / den;
-            resolve({ fps, width: videoStream.width, height: videoStream.height });
-        });
-    });
-}
-function getTimestampMapping(originalTimestamp, feedbackRequest) {
-    if (!feedbackRequest.timestampMappings || feedbackRequest.timestampMappings.length === 0) {
-        return null;
-    }
-    const mappings = feedbackRequest.timestampMappings;
-    let left = 0;
-    let right = mappings.length - 1;
-    let closestIdx = 0;
-    let minDiff = Math.abs(mappings[0].originalTimestamp - originalTimestamp);
-    while (left <= right) {
-        const mid = Math.floor((left + right) / 2);
-        const diff = Math.abs(mappings[mid].originalTimestamp - originalTimestamp);
-        if (diff < minDiff) {
-            minDiff = diff;
-            closestIdx = mid;
-        }
-        if (mappings[mid].originalTimestamp === originalTimestamp) {
-            return mappings[mid].mappedTimestamp;
-        }
-        else if (mappings[mid].originalTimestamp < originalTimestamp) {
-            left = mid + 1;
-        }
-        else {
-            right = mid - 1;
-        }
-    }
-    if (minDiff > MAX_TIMESTAMP_MAPPING_DIFF) {
-        return null;
-    }
-    return mappings[closestIdx].mappedTimestamp;
-}
 export { router as LevelController };

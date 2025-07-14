@@ -7,21 +7,26 @@ import ffmpeg from 'fluent-ffmpeg';
 import { createCanvas, loadImage } from 'canvas';
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import * as tf from '@tensorflow/tfjs-node';
-import { FeedbackRequest, FeedbackRequestSchema, FeedbackResponse, GeminiFeedbackRecommendation, GeminiFeedbackResponse, GeminiFeedbackResponseSchema, LevelSchema, ProcessedFeedbackRecommendation } from '../frontend_models/level_schemas.js';
+import { FeedbackRequest, FeedbackRequestSchema, FeedbackResponse, GeminiFeedbackRecommendation, GeminiFeedbackResponse, GeminiFeedbackResponseSchema, GeminiMiniFeedbackResponse, GeminiMiniFeedbackResponseSchema, LevelSchema, MiniFeedbackRequestSchema, ProcessedFeedbackRecommendation } from '../frontend_models/level_schemas.js';
 import { manualValidateSchema, validateID } from '../frontend_models/validate_schema.js';
 import Level from '../db_models/level_model.js';
 import mongoose from 'mongoose';
 import { Content, GoogleGenAI, Type } from "@google/genai";
 import temp from 'temp';
 import Constants from '../constants.js';
-import { drawResults, getTimestampMapping, getVideoInfo } from './level_utils.js';
-
+import { convertToMp4, drawResults, getTimestampMapping, getVideoInfo, prepareFeedbackBase64s, trimVideo } from './level_utils.js';
+import * as dotenv from 'dotenv'
 
 const router = express.Router();
 const upload = multer({ dest: 'uploads/' });
+dotenv.config();
 
 const MODEL = poseDetection.SupportedModels.MoveNet;
 const MODEL_TYPE = poseDetection.movenet.modelType.SINGLEPOSE_THUNDER;
+
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+});
 
 let detector: poseDetection.PoseDetector | null = null;
 
@@ -189,6 +194,111 @@ router.get('/getAnnotatedVideo/:id', async (req, res) => {
   }
 });
 
+router.post('/getMiniFeedback/:id', upload.fields([
+  { name: 'previousVideo', maxCount: 1 },
+  { name: 'video', maxCount: 1 },
+]), async (req, res) => {
+
+  if(!req.files) {
+    res.status(400).send('No video files uploaded for level');
+    return;
+  }
+
+  if(!('previousVideo' in req.files) || !('video' in req.files)) {
+    res.status(400).send('No video file uploaded for level');
+    return;
+  }
+
+  const previousVideoPath = req.files['previousVideo']?.[0]?.path;
+  const videoPath = req.files['video']?.[0]?.path;
+
+  if(!previousVideoPath || !videoPath) {
+    res.status(400).send('No video file uploaded for level');
+    return;
+  }
+
+  try {
+    const dataJSON = JSON.parse(req.body.data);
+    if(!manualValidateSchema(MiniFeedbackRequestSchema, dataJSON)) {
+      res.status(400).send("Invalid JSON data uploaded for feedback request");
+      return;
+    }
+
+    const {originalVideoBase64, uploadedVideoBase64} = await prepareFeedbackBase64s(req.params.id, videoPath, dataJSON.startTimestamp, dataJSON.endTimestamp);
+
+    const tempPreviousVideoPath = temp.path({ suffix: '.mp4' });
+    await convertToMp4(previousVideoPath, tempPreviousVideoPath);
+
+    const previousUploadedVideoBase64 = fs.readFileSync(tempPreviousVideoPath, { encoding: 'base64' });
+
+    const contents: Content[] = [
+      {
+        role: "user",
+        parts: [
+          {
+            inlineData: {
+              mimeType: "video/mp4",
+              data: previousUploadedVideoBase64 as string
+            }
+          },
+          {
+            inlineData: {
+              mimeType: "video/mp4",
+              data: uploadedVideoBase64 as string
+            }
+          },
+          {
+            inlineData: {
+              mimeType: "video/mp4",
+              data: originalVideoBase64 as string
+            }
+          },
+          {
+            text: Constants.MINI_FEEDBACK_PROMPT + "\n\n" + dataJSON.originalRecommendation
+          }
+        ]
+      }
+    ];
+
+    const response = await ai.models.generateContent({
+      model: "gemini-1.5-flash",
+      contents: contents,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            sufficient: { type: Type.BOOLEAN },
+            description: { type: Type.STRING },
+          },
+          required: ["sufficient", "description"],
+          additionalProperties: false,
+        }
+      }
+    })
+
+    if(!response.text) {
+      res.status(500).send("Error generating feedback");
+      return;
+    }
+
+    const geminiResponseJSON = JSON.parse(response.text) as GeminiMiniFeedbackResponse;
+
+    if(!manualValidateSchema(GeminiMiniFeedbackResponseSchema, geminiResponseJSON)) {
+      res.status(500).send("Error generating feedback");
+      return;
+    }
+
+    res.json(geminiResponseJSON);
+
+  }
+  catch(err) {
+    res.status(500).send('Failed to process video');
+  }
+
+
+});
+
 router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
   if (!req.file) {
     res.status(400).send('No video file uploaded for level');
@@ -210,68 +320,9 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
       return;
     }
 
-    // Convert the uploaded video to mp4
-    const tempUploadedPath = temp.path({ suffix: '.mp4' });
-    await new Promise((resolve, reject) => {
-      ffmpeg(inputPath)
-        .output(tempUploadedPath)
-        .on('end', resolve)
-        .on('error', reject)
-        .run();
-    });
+    const scoreData = dataJSON.scoreData;
 
-    // Get the base64 encoding for the uploaded video
-    const videoBase64 = fs.readFileSync(tempUploadedPath, { encoding: 'base64' });
-
-    const startTimestamp = dataJSON.startTimestamp;
-    const endTimestamp = dataJSON.endTimestamp;
-    const scoreData: Record<string, number> = dataJSON.scoreData;
-
-    if(!mongoose.connection.db) {
-      res.status(500).send("Error connecting with database");
-      return;
-    }
-
-    const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db);
-
-    // Extract only the portion of the video from beginningTimestamp to endTimestamp (in ms)
-    const originalVideoBuffer: Buffer = await new Promise((resolve, reject) => {
-      const stream = bucket.openDownloadStreamByName("ORIGINAL_" + req.params.id);
-      const chunks: Buffer[] = [];
-      stream.on('data', (chunk) => chunks.push(chunk));
-      stream.on('end', () => resolve(Buffer.concat(chunks)));
-      stream.on('error', reject);
-    });
-
-    // Write buffer to a temp file
-    const tempInput = temp.path({ suffix: '.mp4' });
-    const tempOutput = temp.path({ suffix: '.mp4' });
-    fs.writeFileSync(tempInput, originalVideoBuffer);
-
-    // Convert ms to seconds for ffmpeg
-    const startSec = startTimestamp / 1000;
-    const durationSec = (endTimestamp - startTimestamp) / 1000;
-
-    await new Promise((resolve, reject) => {
-      ffmpeg(tempInput)
-        .setStartTime(startSec)
-        .setDuration(durationSec)
-        .output(tempOutput)
-        .on('end', resolve)
-        .on('error', reject)
-        .run();
-    });
-
-    // Read the trimmed video and encode to base64
-    const trimmedVideoBuffer = fs.readFileSync(tempOutput);
-    const originalVideoBase64 = trimmedVideoBuffer.toString('base64');
-
-    // Clean up temp files
-    temp.cleanupSync();
-
-    const ai = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-    });
+    const {originalVideoBase64, uploadedVideoBase64} = await prepareFeedbackBase64s(req.params.id, inputPath, dataJSON.startTimestamp, dataJSON.endTimestamp);
 
     const contents: Content[] = [
       {
@@ -286,7 +337,7 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
           {
             inlineData: {
               mimeType: "video/mp4",
-              data: videoBase64 as string
+              data: uploadedVideoBase64 as string
             }
           },
           {
@@ -355,8 +406,8 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
         return recommendation;
       }
 
-      const mappedStartTimestamp = getTimestampMapping(recommendation.startTimestamp, dataJSON);
-      const mappedEndTimestamp = getTimestampMapping(recommendation.endTimestamp, dataJSON);
+      const mappedStartTimestamp = getTimestampMapping(dataJSON.startTimestamp + recommendation.startTimestamp, dataJSON);
+      const mappedEndTimestamp = getTimestampMapping(dataJSON.startTimestamp + recommendation.endTimestamp, dataJSON);
 
       if(!mappedStartTimestamp || !mappedEndTimestamp) {
         // Return recommendation without startTimestamp and endTimestamp
@@ -368,6 +419,8 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
         ...recommendation,
         mappedStartTimestamp,
         mappedEndTimestamp,
+        startTimestamp: dataJSON.startTimestamp + recommendation.startTimestamp,
+        endTimestamp: dataJSON.startTimestamp + recommendation.endTimestamp,
       };
     });
 
@@ -393,7 +446,7 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
     res.json(responseJSON);
 
   } catch (err) {
-    res.status(500).send('Failed to process video');
+    res.status(500).send('Failed to process video: ' + err);
   }
 });
 

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import SkeletonViewer from "./skeleton-viewer"; // Adjust path as needed
 import * as poseDetection from '@tensorflow-models/pose-detection';
-import type { LevelData, TimestampedPoses } from "~/api/endpoints";
+import type { LevelData, TimestampedPoses, FeedbackResponse, MiniFeedbackResponse, ProcessedFeedbackRecommendation } from "~/api/endpoints";
 import endpoints from "~/api/endpoints";
 import { SessionScorer } from "./utils";
 
@@ -15,6 +15,34 @@ export default function PoseComparisonPage() {
   const [annotatedVideoUrl, setAnnotatedVideoUrl] = useState<string | null>(null);
   const scorerRef = useRef<SessionScorer | null>(null);
   const [windowScore, setWindowScore] = useState<number | null>(null);
+  // Feedback dialog state
+  const [feedbackData, setFeedbackData] = useState<FeedbackResponse | null>(null);
+  const [miniFeedbackData, setMiniFeedbackData] = useState<MiniFeedbackResponse | null>(null);
+  const [showFeedbackModal, setShowFeedbackModal] = useState<boolean>(false);
+  // Loading indicator for Gemini calls
+  const [loading, setLoading] = useState<boolean>(false);
+
+  // Helper to format milliseconds into mm:ss:ms (e.g., 01:23:456)
+  const formatTime = (ms: number) => {
+    const minutes = Math.floor(ms / 60000).toString().padStart(2, '0');
+    const seconds = Math.floor((ms % 60000) / 1000).toString().padStart(2, '0');
+    const milliseconds = Math.floor(ms % 1000).toString().padStart(3, '0');
+    return `${minutes}:${seconds}:${milliseconds}`;
+  };
+
+  // Mini-interval session state
+  const [miniMode, setMiniMode] = useState<boolean>(false);
+  const [miniRecommendation, setMiniRecommendation] = useState<ProcessedFeedbackRecommendation | null>(null);
+  const [previousMiniAttemptFile, setPreviousMiniAttemptFile] = useState<File | null>(null);
+  // Store the most recent big-interval attempt video (for first mini attempts)
+  const [lastBigAttemptFile, setLastBigAttemptFile] = useState<File | null>(null);
+  // Preserve main-interval context when switching to mini mode
+  const [bigContext, setBigContext] = useState<{
+    activeIntervalIndex: number | null;
+    customStart: number | null;
+    customEnd: number | null;
+    afterInterval: boolean;
+  } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const timeUpdateListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => any) | null>(null);
   // Interval interaction state
@@ -155,9 +183,58 @@ export default function PoseComparisonPage() {
         webcamMediaRecorderRef.current.stop();
       });
 
-      const feedback = await endpoints.getFeedback(objectId, file, sessionSummary.beginTimestamp, sessionSummary.endTimestamp, scorerRef.current.getTimestampScores() ?? [], sessionSummary.intervalScores[0]);
+      // Decide which feedback endpoint to call
+      try {
+        setLoading(true);
+        if (miniMode && miniRecommendation) {
+          let prevVideo = previousMiniAttemptFile;
 
-      console.log("Feedback", feedback);
+          if(prevVideo == null && lastBigAttemptFile) {
+            prevVideo = await endpoints.trimVideo(lastBigAttemptFile, miniRecommendation.mappedStartTimestamp!, miniRecommendation.mappedEndTimestamp!);
+          }
+
+          if (!prevVideo) {
+            alert("Previous attempt video unavailable. Try the big interval first.");
+            setLoading(false);
+            cancelInterval();
+            return;
+          }
+
+          const miniResp = await endpoints.getMiniFeedback(
+            objectId,
+            file,
+            prevVideo,
+            miniRecommendation.startTimestamp!,
+            miniRecommendation.endTimestamp!,
+            miniRecommendation.description
+          );
+
+          setMiniFeedbackData(miniResp);
+        } else {
+          const feedback = await endpoints.getFeedback(
+            objectId,
+            file,
+            sessionSummary.beginTimestamp,
+            sessionSummary.endTimestamp,
+            scorerRef.current.getTimestampScores() ?? [],
+            sessionSummary.intervalScores[0]
+          );
+          setFeedbackData(feedback);
+          // Store big interval attempt for potential mini sessions
+          setLastBigAttemptFile(file);
+        }
+        setShowFeedbackModal(true);
+      } catch (err) {
+        console.error(err);
+        alert("Failed to fetch feedback");
+      } finally {
+        setLoading(false);
+      }
+
+      // Update previous mini attempt reference
+      if (miniMode) {
+        setPreviousMiniAttemptFile(file);
+      }
     }
 
     // Show post-interval options
@@ -485,9 +562,215 @@ export default function PoseComparisonPage() {
               </button>
             </>
           )}
+          {(feedbackData || miniFeedbackData) && (
+            <button
+              onClick={() => setShowFeedbackModal(true)}
+              style={{ padding: "8px 14px", borderRadius: "4px", border: "none", backgroundColor: "#17a2b8", color: "#fff" }}
+            >
+              Show Recommendations Again
+            </button>
+          )}
           <button onClick={cancelInterval}
             style={{ padding: "8px 14px", borderRadius: "4px", border: "none", backgroundColor: "#dc3545", color: "#fff" }}>
             Cancel
+          </button>
+        </div>
+      )}
+
+      {/* Feedback Modal */}
+      {showFeedbackModal && feedbackData && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          backgroundColor: "rgba(0,0,0,0.5)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1000,
+        }}>
+          <div style={{
+            backgroundColor: "#000",
+            color: "#fff",
+            padding: "2rem",
+            borderRadius: "12px",
+            width: "90%",
+            maxWidth: "600px",
+            maxHeight: "80%",
+            overflowY: "auto",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.7)",
+          }}>
+            <h2 style={{ marginTop: 0, marginBottom: "0.5rem", fontSize: "2rem", fontWeight: "bold" }}>{feedbackData.dialogHeader}</h2>
+            <p style={{ margin: 0, lineHeight: 1.4 }}>{feedbackData.description}</p>
+            {/* Optional overall description could go here if available */}
+            <div style={{
+              marginTop: "1rem",
+              display: "flex",
+              flexDirection: "column",
+              gap: "1rem",
+            }}>
+              {feedbackData.recommendations.map((rec, idx) => (
+                <div key={idx} style={{
+                  backgroundColor: "#111",
+                  padding: "1rem 1.25rem",
+                  borderRadius: "8px",
+                  width: "100%",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
+                    <h3 style={{ margin: "0 0 0.5rem 0", fontWeight: "bold", fontSize: "1.1rem" }}>{rec.title}</h3>
+                    {rec.startTimestamp !== undefined && rec.endTimestamp !== undefined && (
+                      <a
+                        href="#"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          // Save current big-interval context before switching
+                          setBigContext({
+                            activeIntervalIndex,
+                            customStart,
+                            customEnd,
+                            afterInterval,
+                          });
+
+                          // Enter mini interval mode
+                          setShowFeedbackModal(false);
+                          setMiniMode(true);
+                          setMiniRecommendation(rec);
+                          setCustomStart(rec.startTimestamp!);
+                          setCustomEnd(rec.endTimestamp!);
+                          setAfterInterval(true);
+                          setActiveIntervalIndex(null);
+                        }}
+                        style={{ color: "#0d6efd", fontSize: "0.9rem" }}
+                      >
+                        {`Practice this Recommendation (${formatTime(rec.startTimestamp!)} - ${formatTime(rec.endTimestamp!)})`}
+                      </a>
+                    )}
+                  </div>
+                  <p style={{ margin: 0, lineHeight: 1.4 }}>{rec.description}</p>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={() => setShowFeedbackModal(false)}
+              style={{
+                marginTop: "1.5rem",
+                padding: "10px 20px",
+                border: "1px solid #fff",
+                backgroundColor: "transparent",
+                color: "#fff",
+                borderRadius: "4px",
+                cursor: "pointer",
+                alignSelf: "center",
+              }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Mini Feedback Modal */}
+      {showFeedbackModal && miniFeedbackData && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          backgroundColor: "rgba(0,0,0,0.5)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1000,
+        }}>
+          <div style={{
+            backgroundColor: "#000",
+            color: "#fff",
+            padding: "2rem",
+            borderRadius: "12px",
+            width: "90%",
+            maxWidth: "500px",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.7)",
+          }}>
+            <h2 style={{ marginTop: 0, fontSize: "1.8rem", fontWeight: "bold" }}>Practice Feedback</h2>
+            <p style={{ lineHeight: 1.4 }}>{miniFeedbackData.description}</p>
+            {miniFeedbackData.sufficient && (
+              <p style={{ marginTop: "1rem", color: "#28a745", fontWeight: "bold" }}>Great job! This looks sufficient.</p>
+            )}
+            <button
+              onClick={() => setShowFeedbackModal(false)}
+              style={{
+                marginTop: "1.5rem",
+                padding: "10px 20px",
+                border: "1px solid #fff",
+                backgroundColor: "transparent",
+                color: "#fff",
+                borderRadius: "4px",
+                cursor: "pointer",
+                alignSelf: "center",
+              }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Loading Indicator */}
+      {loading && (
+        <div style={{ display: "flex", justifyContent: "center", marginTop: "1rem" }}>
+          <div style={{
+            border: "4px solid #f3f3f3",
+            borderTop: "4px solid #3498db",
+            borderRadius: "50%",
+            width: "30px",
+            height: "30px",
+            animation: "spin 1s linear infinite",
+          }} />
+          {/* Keyframes */}
+          <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg);} }`}</style>
+        </div>
+      )}
+
+      {/* Mini mode banner & controls */}
+      {miniMode && (
+        <div style={{
+          marginTop: "1rem",
+          display: "flex",
+          justifyContent: "center",
+          gap: "1rem",
+          alignItems: "center",
+          flexWrap: "wrap",
+        }}>
+          <span style={{ color: "#fff", backgroundColor: "#6c757d", padding: "4px 12px", borderRadius: "4px" }}>
+            Practicing recommendation: {miniRecommendation?.title}
+          </span>
+          <button
+            onClick={() => {
+              // Restore previous big-interval context if available
+              if (bigContext) {
+                setActiveIntervalIndex(bigContext.activeIntervalIndex);
+                setCustomStart(bigContext.customStart);
+                setCustomEnd(bigContext.customEnd);
+                setAfterInterval(bigContext.afterInterval);
+              } else {
+                // Fallback to resetting to full interval defaults
+                setCustomStart(null);
+                setCustomEnd(null);
+                setAfterInterval(false);
+                setActiveIntervalIndex(null);
+              }
+
+              // Exit mini mode and clear related state
+              setMiniMode(false);
+              setMiniRecommendation(null);
+              setPreviousMiniAttemptFile(null);
+            }}
+            style={{ padding: "6px 12px", borderRadius: "4px", border: "none", backgroundColor: "#dc3545", color: "#fff" }}
+          >
+            Return to Full Interval
           </button>
         </div>
       )}

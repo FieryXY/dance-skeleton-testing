@@ -29,7 +29,13 @@ export interface ProcessedFeedbackRecommendation {
 
 export interface FeedbackResponse {
     dialogHeader: string;
+    description: string;
     recommendations: ProcessedFeedbackRecommendation[];
+}
+
+export interface MiniFeedbackResponse {
+    description: string;
+    sufficient: boolean;
 }
 
 class Endpoints {
@@ -126,6 +132,68 @@ class Endpoints {
         })
         .catch(error => {
             console.error("Error creating level:", error);
+            throw error;
+        });
+    }
+
+    getMiniFeedback = (objectId: string, video: File, previousVideo: File, startTimestamp: number, endTimestamp: number, originalRecommendation: string): Promise<MiniFeedbackResponse> => {
+        const formData = new FormData();
+        formData.append("video", video);
+        formData.append("previousVideo", previousVideo);
+
+        const jsonData =  {
+            startTimestamp: startTimestamp,
+            endTimestamp: endTimestamp,
+            originalRecommendation: originalRecommendation,
+        }
+
+        formData.append("data", JSON.stringify(jsonData));
+
+        return fetch(`${BackendURL}/levels/getMiniFeedback/${objectId}`, {
+            method: "POST",
+            body: formData,
+        })
+        .then(async response => {
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Network response was not ok: ${errorText}`);
+            }
+
+            const text = await response.json();
+            return text as MiniFeedbackResponse;
+        })
+        .catch(error => {
+            console.error("Error getting mini feedback:", error);
+            throw error;
+        });
+    }
+    
+    trimVideo = (video: File, startTimestamp: number, endTimestamp: number): Promise<File> => {
+        const formData = new FormData();
+        formData.append("video", video);
+        
+        const jsonData = {
+            startTimestamp: startTimestamp,
+            endTimestamp: endTimestamp,
+        }
+
+        formData.append("data", JSON.stringify(jsonData));
+
+        return fetch(`${BackendURL}/videos/trimVideo`, {
+            method: "POST",
+            body: formData,
+        })
+        .then(async response => {
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Network response was not ok: ${errorText}`);
+            }
+
+            const blob = await response.blob();
+            return new File([blob], video.name, { type: video.type });
+        })
+        .catch(error => {
+            console.error("Error trimming video:", error);
             throw error;
         });
     }

@@ -3,6 +3,9 @@ import Constants from "../constants.js";
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import { FeedbackRequest } from "../frontend_models/level_schemas.js";
 import ffmpeg from 'fluent-ffmpeg';
+import mongoose, { mongo } from "mongoose";
+import temp from "temp";
+import * as fs from 'fs';
 
 export function drawResults(poses: poseDetection.Pose[], ctx: CanvasRenderingContext2D, model: poseDetection.SupportedModels): void {
     for (const pose of poses) {
@@ -98,4 +101,78 @@ export function drawResults(poses: poseDetection.Pose[], ctx: CanvasRenderingCon
     }
   
     return mappings[closestIdx].mappedTimestamp;
+  }
+
+export function convertToMp4(inputPath: string, outputPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .output(outputPath)
+        .on('end', () => {
+            resolve();
+        })
+        .on('error', (err) => {
+            reject(err);
+        })
+        .run();
+    });
+  }
+
+  export function trimVideo(inputPath: string, outputPath: string, startTimestamp: number, endTimestamp: number): Promise<void> {
+    const startSec = startTimestamp / 1000;
+    const durationSec = (endTimestamp - startTimestamp) / 1000;
+
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .setStartTime(startSec)
+        .setDuration(durationSec)
+        .output(outputPath)
+        .on('end', () => {
+            resolve();
+        })
+        .on('error', (err) => {
+            reject(err);
+        })
+        .run();
+    });
+  }
+
+  export async function prepareFeedbackBase64s(objectId: string, uploadedFilePath: string, startTimestamp: number, endTimestamp: number): Promise<{originalVideoBase64: string, uploadedVideoBase64: string}> {
+    if(!mongoose.connection.db) {
+        throw new Error("Error connecting with database");
+    }
+
+    // Convert the uploaded video to mp4
+    const tempUploadedPath = temp.path({ suffix: '.mp4' });
+    await convertToMp4(uploadedFilePath, tempUploadedPath);
+
+    // Get the base64 encoding for the uploaded video
+    const uploadedVideoBase64 = fs.readFileSync(tempUploadedPath, { encoding: 'base64' });
+
+    const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db);
+
+     // Extract only the portion of the video from beginningTimestamp to endTimestamp (in ms)
+     const originalVideoBuffer: Buffer = await new Promise((resolve, reject) => {
+        const stream = bucket.openDownloadStreamByName("ORIGINAL_" + objectId);
+        const chunks: Buffer[] = [];
+        stream.on('data', (chunk) => chunks.push(chunk));
+        stream.on('end', () => resolve(Buffer.concat(chunks)));
+        stream.on('error', reject);
+      });
+
+      // Write buffer to a temp file
+    const tempInput = temp.path({ suffix: '.mp4' });
+    const tempOutput = temp.path({ suffix: '.mp4' });
+    fs.writeFileSync(tempInput, originalVideoBuffer);
+
+    // Get the part of the video from startTimestamp to endTimestamp
+    await trimVideo(tempInput, tempOutput, startTimestamp, endTimestamp);
+
+    // Read the trimmed video and encode to base64
+    const trimmedVideoBuffer = fs.readFileSync(tempOutput);
+    const originalVideoBase64 = trimmedVideoBuffer.toString('base64');
+
+    // Clean up temp files
+    temp.cleanupSync();
+
+    return {originalVideoBase64, uploadedVideoBase64};
   }

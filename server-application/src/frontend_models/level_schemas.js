@@ -39,6 +39,16 @@ const FeedbackRequestSchema = {
     required: ["startTimestamp", "endTimestamp", "scoreData", "timestampMappings"],
     additionalProperties: false,
 };
+const MiniFeedbackRequestSchema = {
+    type: "object",
+    properties: {
+        startTimestamp: { type: "number" },
+        endTimestamp: { type: "number" },
+        originalRecommendation: { type: "string" },
+    },
+    required: ["startTimestamp", "endTimestamp", "originalRecommendation"],
+    additionalProperties: false,
+};
 const GeminiFeedbackResponseSchema = {
     type: "object",
     properties: {
@@ -61,4 +71,13 @@ const GeminiFeedbackResponseSchema = {
     required: ["description", "recommendations"],
     additionalProperties: false,
 };
-export { LevelSchema, FeedbackRequestSchema, GeminiFeedbackResponseSchema };
+const GeminiMiniFeedbackResponseSchema = {
+    type: "object",
+    properties: {
+        description: { type: "string" },
+        sufficient: { type: "boolean" },
+    },
+    required: ["description", "sufficient"],
+    additionalProperties: false,
+};
+export { LevelSchema, FeedbackRequestSchema, GeminiFeedbackResponseSchema, MiniFeedbackRequestSchema, GeminiMiniFeedbackResponseSchema };
