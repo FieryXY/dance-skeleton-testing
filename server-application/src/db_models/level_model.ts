@@ -17,6 +17,10 @@ const LevelSchema = new mongoose.Schema({
         },
         required: true
     },
+    interval_notes: {
+      type: [String],
+      required: false,
+    },
     pose_data: {
         type: [
           {

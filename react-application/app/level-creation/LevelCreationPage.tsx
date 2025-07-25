@@ -8,6 +8,7 @@ export default function LevelCreationPage() {
     const [videoFile, setVideoFile] = useState<File | null>(null);
     const [videoURL, setVideoURL] = useState<string | null>(null);
     const [intervals, setIntervals] = useState<number[][]>([]);
+    const [intervalNotes, setIntervalNotes] = useState<string[]>([]);
 
     // Interval temp state
     const [pendingStart, setPendingStart] = useState<number | null>(null);
@@ -40,11 +41,13 @@ export default function LevelCreationPage() {
             return;
         }
         setIntervals(prev => [...prev, [Math.round(pendingStart), Math.round(end)]]);
+        setIntervalNotes(prev => [...prev, ""]);
         setPendingStart(null);
     };
 
     const deleteInterval = (idx: number) => {
         setIntervals(prev => prev.filter((_, i) => i !== idx));
+        setIntervalNotes(prev => prev.filter((_, i) => i !== idx));
     };
 
     const handleSubmit = async () => {
@@ -60,7 +63,7 @@ export default function LevelCreationPage() {
             return;
         }
 
-        const data: LevelCreationData = { title, intervals };
+        const data: LevelCreationData = { title, intervals, interval_notes: intervalNotes };
 
         setIsLoading(true);
         try {
@@ -72,6 +75,7 @@ export default function LevelCreationPage() {
             setVideoFile(null);
             setVideoURL(null);
             setIntervals([]);
+            setIntervalNotes([]);
         } catch (err: any) {
             alert(`Error creating level: ${err.message || err}`);
         } finally {
@@ -180,6 +184,23 @@ export default function LevelCreationPage() {
                                     >
                                         Delete
                                     </button>
+                                    <input
+                                        type="text"
+                                        value={intervalNotes[idx]}
+                                        onChange={e => setIntervalNotes(prev => {
+                                            const next = [...prev];
+                                            next[idx] = e.target.value;
+                                            return next;
+                                        })}
+                                        style={{ 
+                                            width: "100%", 
+                                            padding: "8px", 
+                                            marginTop: "4px", 
+                                            color: "#fff", 
+                                            backgroundColor: "#222", 
+                                            border: "1px solid #555" 
+                                        }}
+                                    />
                                 </div>
                             </li>
                         ))}

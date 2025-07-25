@@ -16,6 +16,7 @@ export interface TimestampedPoses {
 export interface LevelCreationData {
     title: string,
     intervals: number[][],
+    interval_notes?: string[],
 }
 
 export interface ProcessedFeedbackRecommendation {

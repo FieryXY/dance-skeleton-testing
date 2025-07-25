@@ -13,6 +13,12 @@ The entire response should refer to the user in the second person as if you are 
 
 I've also included some scores on a scale of 1 to 100 on how closely each joint angle in the user choreography corresponded to the original choreography below as a heuristic you can loosely refer to:
 `,
+
+    INTERVAL_NOTES_PROMPT_ADDITION: `
+    Also, the choreographer provided some notes of their own that may or may not be relevant to this segment of the choreography. You don't have to use then, but if they are relevant,
+    here they are:
+    `,
+
     // This is used when mapping the timestamps that Gemini returns in the original choreography video to the timestamps in the user's video
     // If we can't find a mapping from original timestamp to user timestamp within this range of the timestamp that Gemini provides,
     // we won't provide timestamps for that recommendation

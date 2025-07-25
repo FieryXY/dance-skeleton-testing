@@ -1,8 +1,9 @@
 import ajv, { JSONSchemaType } from "ajv"
 
 interface FrontendLevel {
-    title: string,
-    intervals: number[][]
+    title: string;
+    intervals: number[][];
+    interval_notes?: string[];
 }
 
 interface FeedbackRequest {
@@ -63,7 +64,14 @@ const LevelSchema: JSONSchemaType<FrontendLevel> = {
                 type: "array",
                 items: { type: "integer" }
             }
-        }
+        },
+        interval_notes: {
+          type: "array",
+          nullable: true,
+          items: {
+            type: "string"
+          }
+        },
     },
     required: ["title", "intervals"],
     additionalProperties: false

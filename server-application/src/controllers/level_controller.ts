@@ -124,6 +124,15 @@ router.post('/create', upload.single('video'), async (req, res) => {
       pose_data: poses,
     });
 
+    if(dataJSON.interval_notes) {
+      newLevel = new Level({
+        title: dataJSON.title,
+        intervals: dataJSON.intervals,
+        pose_data: poses,
+        interval_notes: dataJSON.interval_notes,
+      })
+    }
+
     newLevel.save().then(doc => {
       if(!mongoose.connection.db) {
         Level.findByIdAndDelete(doc._id);
@@ -320,9 +329,42 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
       return;
     }
 
+    let relevant_notes: string[] = []
+    console.log("Data JSON", dataJSON)
+    if(level.interval_notes) {
+      for (let i = 0; i < level.intervals.length; i++) {
+        // @ts-ignore
+        const [intervalStart, intervalEnd] = level.intervals[i];
+
+        // Check if intervals overlap
+        const isIntersecting = intervalEnd >= dataJSON.startTimestamp && intervalStart <= dataJSON.endTimestamp;
+        if (isIntersecting) {
+            console.log(`Adding Interval Note ${i} to Prompt`)
+            const note = level.interval_notes[i];
+            if (note !== undefined) {
+                relevant_notes.push(note);
+            }
+        }
+        else {
+          console.log(`Interval (${intervalStart}, ${intervalEnd}) doesn't intersect (${dataJSON.startTimestamp}, ${dataJSON.endTimestamp})`)
+        }
+      }
+    }
+
+    // Remove empty notes
+    relevant_notes = relevant_notes.filter(note => note.trim().length != 0);
+
     const scoreData = dataJSON.scoreData;
 
     const {originalVideoBase64, uploadedVideoBase64} = await prepareFeedbackBase64s(req.params.id, inputPath, dataJSON.startTimestamp, dataJSON.endTimestamp);
+
+    let prompt = Constants.MAIN_FEEDBACK_PROMPT + "\n\n" + JSON.stringify(scoreData)
+
+    if(relevant_notes.length > 0) {
+      prompt = prompt + "\n\n" + Constants.INTERVAL_NOTES_PROMPT_ADDITION + "\n\n" + relevant_notes.join("\n")
+    }
+
+    console.log("Final Prompt", prompt)
 
     const contents: Content[] = [
       {
@@ -341,7 +383,7 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
             }
           },
           {
-            text: Constants.MAIN_FEEDBACK_PROMPT + "\n\n" + JSON.stringify(scoreData)
+            text: prompt
           }
         ]
       }

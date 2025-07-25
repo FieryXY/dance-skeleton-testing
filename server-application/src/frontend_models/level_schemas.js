@@ -8,7 +8,14 @@ const LevelSchema = {
                 type: "array",
                 items: { type: "integer" }
             }
-        }
+        },
+        interval_notes: {
+            type: "array",
+            nullable: true,
+            items: {
+                type: "string"
+            }
+        },
     },
     required: ["title", "intervals"],
     additionalProperties: false
