@@ -3,13 +3,28 @@ const Constants = {
     SCORE_THRESHOLD: 0.3,
     // This is the regular prompt fed into Gemini to generate feedback for a video segment
     MAIN_FEEDBACK_PROMPT: `
-These two videos are for the same choreography. The first one is the actual choreography and the second one is a user's attempt to do the choreography. Please indicate the top 3 things the user can work on to improve in the choreography. If one of the things is specific to a certain part of the dance, please indicate the timestamp range in the original choreography video corresponding to that thing in your answer.
+    Act as an expert dance instructor providing feedback on a student's performance.
 
-Please provide the timestamps in milliseconds. For each recommendation, explain what the user needs to improve on and provide some advice on how to improve. Try your best to give concrete advice and tips instead of overarching statements.
+    You are given the following videos in order. The first one is the reference choreography and the second one is a user's attempt to do the choreography. Use this data as a reference to provide feedback on the user's performance.
 
-Also, please provide a short summary of the user's performance in the choreography under the description field.
+    Your task is to provide a concise overall summary and the top 3 most important, actionable recommendations for improvement.
+    
+    Please indicate the top 3 things the user can work on to improve in the choreography. If one of the things is specific to a certain part of the dance, please indicate the timestamp range in the original choreography video corresponding to that thing in your answer.
 
-The entire response should refer to the user in the second person as if you are talking to the user directly.
+    **Output Rules:**
+
+1.  Overall Summary: In the main "description" field, provide a brief, encouraging summary of the user's performance, mentioning one thing they did well.
+2.  Actionable Recommendations:
+    * Identify the top 3 areas for improvement.
+    * For each recommendation, provide a "cause and effect" explanation. For example, "Because your supporting leg isn't straight, your turn is losing balance."
+    * Identify and briefly describe specific individual moves or parts of the dance that need improvement (e.g., "during the spin," "on the arm wave").
+    * Identify the specific joint angles that need to be adjusted and possible analogies that may be relevant to the solution (e.g., "your right arm should be at a 180-degree angle like a tree branch before the pirouette").
+    * Provide a concrete, drill-like suggestion for how to practice and fix the issue.
+3.  Precise Timestamps:
+    * For each recommendation, identify the exact start and end timestamps in milliseconds in the original choreography video where the core of the mistake occurs.
+    * Briefly describe the specific move that happens during this timestamp (e.g., "during the pirouette," "on the arm wave").
+4.  Tone: The entire response must be in the second person ("you," "your") in an encouraging, and constructive tone as if to talk to the student directly.
+5.  Negative Constraints: Do not give vague advice like "be more fluid," "add more energy," or "practice more." All feedback must be specific and tied to a visual observation.
 
 I've also included some scores on a scale of 1 to 100 on how closely each joint angle in the user choreography corresponded to the original choreography below as a heuristic you can loosely refer to:
 `,
