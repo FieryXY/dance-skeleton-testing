@@ -236,17 +236,16 @@ export default function PoseComparisonPage() {
 
           setMiniFeedbackData(miniResp);
         } else {
-          // TODO: Uncomment this!
-          // const feedback = await endpoints.getFeedback(
-          //   objectId,
-          //   file,
-          //   sessionSummary.beginTimestamp,
-          //   sessionSummary.endTimestamp,
-          //   scorerRef.current.getTimestampScores() ?? [],
-          //   sessionSummary.intervalScores[0],
-          //   playbackRate
-          // );
-          // setFeedbackData(feedback);
+          const feedback = await endpoints.getFeedback(
+            objectId,
+            file,
+            sessionSummary.beginTimestamp,
+            sessionSummary.endTimestamp,
+            scorerRef.current.getTimestampScores() ?? [],
+            sessionSummary.intervalScores[0],
+            playbackRate
+          );
+          setFeedbackData(feedback);
           // Store big interval attempt for potential mini sessions
           setLastBigAttemptFile(file);
         }

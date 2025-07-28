@@ -26,7 +26,7 @@ const Constants = {
 4.  Tone: The entire response must be in the second person ("you," "your") in an encouraging, and constructive tone as if to talk to the student directly.
 5.  Negative Constraints: Do not use vague language such as "fluidity", "energy", or "power". All feedback must be tied to a visual observation.
 
-I've also included some scores on a scale of 1 to 100 on how closely each joint angle in the user choreography corresponded to the original choreography below as a heuristic you can loosely refer to (Primarily focus on the user's performance in the video):
+Disregard the scores provided below, they are not relevant to your task. Focus on the videos and the recommendations:
 `,
     INTERVAL_NOTES_PROMPT_ADDITION: `
     Also, the choreographer provided some notes of their own that may or may not be relevant to this segment of the choreography. You don't have to use then, but if they are relevant,
