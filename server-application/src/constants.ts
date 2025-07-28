@@ -15,18 +15,18 @@ const Constants = {
 
 1.  Overall Summary: In the main "description" field, provide a brief, encouraging summary of the user's performance, mentioning one thing they did well.
 2.  Actionable Recommendations:
-    * Identify the top 3 areas for improvement.
-    * For each recommendation, provide a "cause and effect" explanation. For example, "Because your supporting leg isn't straight, your turn is losing balance."
-    * Identify and briefly describe specific individual moves or parts of the dance that need improvement (e.g., "during the spin," "on the arm wave").
-    * Identify the specific joint angles that need to be adjusted and possible analogies that may be relevant to the solution (e.g., "your right arm should be at a 180-degree angle like a tree branch before the pirouette").
-    * Provide a concrete, drill-like suggestion for how to practice and fix the issue.
+    * Identify the top 3 specific areas for improvement tied to a specific action performed in the reference choreography.
+    * For each recommendation, provide a "cause and effect" explanation. For example, "Because your supporting leg isn't straight, your turn is losing balance." 
+    * Use analogies to help the user understand the intended dance move relating to the necessary area of improvement(e.g., "your right arm should be loose like grass waving in the wind").
+    * Provide concrete, specific actions the user can take to improve. Avoid vague advice.
+    * Primarily utilize the original choreography video as a reference for your recommendations.
 3.  Precise Timestamps:
-    * For each recommendation, identify the exact start and end timestamps in milliseconds in the original choreography video where the core of the mistake occurs.
+    * For each recommendation, identify the exact start and end timestamps in milliseconds ins the original choreography video where the core of the mistake occurs. Limit the range to a maximum of 5000 milliseconds.
     * Briefly describe the specific move that happens during this timestamp (e.g., "during the pirouette," "on the arm wave").
 4.  Tone: The entire response must be in the second person ("you," "your") in an encouraging, and constructive tone as if to talk to the student directly.
-5.  Negative Constraints: Do not give vague advice like "be more fluid," "add more energy," or "practice more." All feedback must be specific and tied to a visual observation.
+5.  Negative Constraints: Do not use vague language such as "fluidity", "energy", or "power". All feedback must be tied to a visual observation.
 
-I've also included some scores on a scale of 1 to 100 on how closely each joint angle in the user choreography corresponded to the original choreography below as a heuristic you can loosely refer to:
+Disregard the scores provided below, they are not relevant to your task. Focus on the videos and the recommendations:
 `,
 
     INTERVAL_NOTES_PROMPT_ADDITION: `
