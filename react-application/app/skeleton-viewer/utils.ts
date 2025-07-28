@@ -3,6 +3,58 @@ import * as poseDetection from '@tensorflow-models/pose-detection';
 import type { LevelData, TimestampedPoses } from '~/api/endpoints';
 import type { Keypoint } from '@tensorflow-models/pose-detection';
 
+// Angles
+export const angles_to_consider: { [key: string]: {keypoints: string[], raw_weight: number} } = {
+    "left_elbow": {
+        "keypoints": ["left_shoulder", "left_elbow", "left_wrist"],
+        "raw_weight": 3
+    },
+    "right_elbow": {
+        "keypoints": ["right_shoulder", "right_elbow", "right_wrist"],
+        "raw_weight": 3
+    },
+    "left_knee": {
+        "keypoints": ["left_hip", "left_knee", "left_ankle"],
+        "raw_weight": 3
+    },
+    "right_knee": {
+        "keypoints": ["right_hip", "right_knee", "right_ankle"],
+        "raw_weight": 3
+    },
+    "left_armpit": {
+        "keypoints": ["left_hip", "left_shoulder", "left_elbow"],
+        "raw_weight": 3
+    },
+    "right_armpit": {
+        "keypoints": ["right_hip", "right_shoulder", "right_elbow"],
+        "raw_weight": 3
+    },
+    "between_legs_left": {
+        "keypoints": ["left_knee", "left_hip", "right_hip"],
+        "raw_weight": 1.5
+    },
+    "between_legs_right": {
+        "keypoints": ["right_knee", "right_hip", "left_hip"],
+        "raw_weight": 1.5
+    },
+    "top_left_chest": {
+        "keypoints": ["left_hip", "left_shoulder", "right_shoulder"],
+        "raw_weight": 1
+    },
+    "top_right_chest": {
+        "keypoints": ["right_hip", "right_shoulder", "left_shoulder"],
+        "raw_weight": 1
+    },
+    "bottom_left_chest": {
+        "keypoints": ["left_shoulder", "left_hip", "right_hip"],
+        "raw_weight": 1
+    },
+    "bottom_right_chest": {
+        "keypoints": ["right_shoulder", "right_hip", "left_hip"],
+        "raw_weight": 1
+    },
+}
+
 // Model and Detector Variables
 const SCORE_THRESHOLD = 0.3
 const PENALTY_FOR_OCCLUDED_KEYPOINT = -10
@@ -18,7 +70,7 @@ tf.ready().then(() => {
 });
 
 // Stream Transformer that adds skeleton onto the video stream and stores the poses with a function passed in by the caller
-export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses) => any): TransformStream {
+export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses) => any, getMirror: () => boolean, getBadKeypoints: () => string[]): TransformStream {
     return new TransformStream({
         async transform(videoFrame: VideoFrame, controller) {
             // If the detector isn't ready for some reason, skip
@@ -28,7 +80,7 @@ export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses
             }
             
             // Lazily initialize canvas and context on the first frame
-            const offscreenCanvas = new OffscreenCanvas(videoFrame.displayWidth, videoFrame.displayHeight);
+            let offscreenCanvas = new OffscreenCanvas(videoFrame.displayWidth, videoFrame.displayHeight);
             const ctx = offscreenCanvas.getContext("2d");
       
             if (!ctx) {
@@ -53,8 +105,22 @@ export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses
                 timestamp: videoFrame.timestamp/1000
             });
             if (poses.length > 0 && model != null) {
-                drawResults(poses, ctx, model);
+                drawResults(poses, ctx, model, getBadKeypoints);
             }
+
+            if(getMirror()) {
+                const mirroredOffscreenCanvas = new OffscreenCanvas(videoFrame.displayWidth, videoFrame.displayHeight);
+                const mirroredCtx = mirroredOffscreenCanvas.getContext("2d");
+
+                if(mirroredCtx) {
+                    mirroredCtx.translate(videoFrame.displayWidth, 0);
+                    mirroredCtx.scale(-1, 1);
+                    mirroredCtx.drawImage(offscreenCanvas, 0, 0, videoFrame.displayWidth, videoFrame.displayHeight);
+                    // Replace the original canvas with the mirrored one
+                    offscreenCanvas = mirroredOffscreenCanvas;
+                }
+            }
+
             videoFrame.close();
       
             const newFrame = new VideoFrame(offscreenCanvas, {
@@ -66,23 +132,37 @@ export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses
     });
 }
 
-export function drawResults(poses: poseDetection.Pose[], ctx: OffscreenCanvasRenderingContext2D, model: poseDetection.SupportedModels): Boolean {
+export function drawResults(poses: poseDetection.Pose[], ctx: OffscreenCanvasRenderingContext2D, model: poseDetection.SupportedModels, getBadKeypoints: () => string[]): Boolean {
     for (const pose of poses) {
-        drawKeypoints(pose.keypoints, ctx);
+        drawKeypoints(pose.keypoints, ctx, getBadKeypoints);
         drawSkeleton(pose.keypoints, ctx, model);
     }
     return true;
 }
 
-function drawKeypoints(keypoints: poseDetection.Keypoint[], ctx: OffscreenCanvasRenderingContext2D) {
+function drawKeypoints(keypoints: poseDetection.Keypoint[], ctx: OffscreenCanvasRenderingContext2D, getBadKeypoints: () => string[]) {
     ctx.fillStyle = 'Red'; // Points color
     ctx.strokeStyle = 'White';
     ctx.lineWidth = 2;
+
+    const badKeypoints = getBadKeypoints();
 
     for (const keypoint of keypoints) {
         if(!keypoint.score) {
             continue;
         }
+
+        if (keypoint.name && badKeypoints.includes(keypoint.name)) {
+            // Draw a blurry red circle for bad keypoints
+            ctx.save();
+            ctx.filter = 'blur(2px)';
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
+            const badCircle = new Path2D();
+            badCircle.arc(keypoint.x, keypoint.y, 20, 0, 2 * Math.PI);
+            ctx.fill(badCircle);
+            ctx.restore();
+        }
+
         if (keypoint.score >= SCORE_THRESHOLD) { // Only draw confident points
             const circle = new Path2D();
             circle.arc(keypoint.x, keypoint.y, 4, 0, 2 * Math.PI);
@@ -194,57 +274,6 @@ function comparePosesByAngles2D(pose1: poseDetection.Pose, pose2: poseDetection.
     const pose1Points: Keypoint[] = pose1.keypoints.filter(kp => kp.score && kp.score >= SCORE_THRESHOLD);
     const pose2Points: Keypoint[] = pose2.keypoints.filter(kp => kp.score && kp.score >= SCORE_THRESHOLD);
 
-    const angles_to_consider: { [key: string]: {keypoints: string[], raw_weight: number} } = {
-        "left_elbow": {
-            "keypoints": ["left_shoulder", "left_elbow", "left_wrist"],
-            "raw_weight": 3
-        },
-        "right_elbow": {
-            "keypoints": ["right_shoulder", "right_elbow", "right_wrist"],
-            "raw_weight": 3
-        },
-        "left_knee": {
-            "keypoints": ["left_hip", "left_knee", "left_ankle"],
-            "raw_weight": 3
-        },
-        "right_knee": {
-            "keypoints": ["right_hip", "right_knee", "right_ankle"],
-            "raw_weight": 3
-        },
-        "left_armpit": {
-            "keypoints": ["left_hip", "left_shoulder", "left_elbow"],
-            "raw_weight": 3
-        },
-        "right_armpit": {
-            "keypoints": ["right_hip", "right_shoulder", "right_elbow"],
-            "raw_weight": 3
-        },
-        "between_legs_left": {
-            "keypoints": ["left_knee", "left_hip", "right_hip"],
-            "raw_weight": 1.5
-        },
-        "between_legs_right": {
-            "keypoints": ["right_knee", "right_hip", "left_hip"],
-            "raw_weight": 1.5
-        },
-        "top_left_chest": {
-            "keypoints": ["left_hip", "left_shoulder", "right_shoulder"],
-            "raw_weight": 1
-        },
-        "top_right_chest": {
-            "keypoints": ["right_hip", "right_shoulder", "left_shoulder"],
-            "raw_weight": 1
-        },
-        "bottom_left_chest": {
-            "keypoints": ["left_shoulder", "left_hip", "right_hip"],
-            "raw_weight": 1
-        },
-        "bottom_right_chest": {
-            "keypoints": ["right_shoulder", "right_hip", "left_hip"],
-            "raw_weight": 1
-        },
-    }
-
     let total_score = 0;
 
     // Store the scores for each angle. The name for each angle is the name of the second keypoint of the angle
@@ -333,14 +362,14 @@ export class SessionScorer {
     private lastScoredTimestamp: number;
     private window_size: number;
     private timestamp_scores: ScoredPose[];
-    private current_window_average: number;
+    private last_score: Record<string, number>;
     private intervals: [number, number][];
 
     constructor(levelData: LevelData, window_size: number = 5000, intervals: [number, number][] = []) {
         this.levelData = levelData;
         this.lastScoredTimestamp = 0;
         this.window_size = window_size;
-        this.current_window_average = 0;
+        this.last_score = {"total": 0};
         this.intervals = intervals;
         this.timestamp_scores = [];
     }
@@ -350,10 +379,10 @@ export class SessionScorer {
      * @param poses - The next user pose to score
      * @returns The current window average score
      */
-    consumePose(poses: TimestampedPoses, originalTimestamp: number) {
+    consumePose(poses: TimestampedPoses, originalTimestamp: number): Record<string, number> {
         // Find the pose in the level data that is closest to the pose in terms of timestamp
         if(this.levelData.pose_data.length == 0) {
-            return this.current_window_average;
+            return this.last_score;
         }
 
         // Binary search to find the closest pose since pose_data is sorted by timestamp
@@ -381,7 +410,7 @@ export class SessionScorer {
         }
 
         if(closestPose == null) {
-            return this.current_window_average;
+            return this.last_score;
         }
 
         // // Don't score poses that happened before a pose that was already scored
@@ -390,7 +419,7 @@ export class SessionScorer {
         // }
 
         if (poses.poses.length === 0 || closestPose.poses.length === 0) {
-            return this.current_window_average;
+            return this.last_score;
         }
 
         // Score the pose
@@ -411,9 +440,9 @@ export class SessionScorer {
         insertIdx = l;
         this.timestamp_scores.splice(insertIdx, 0, {originalTimestamp: closestPose.timestamp, webcamTimestamp: poses.timestamp, scores: score});
         this.lastScoredTimestamp = closestPose.timestamp;
-        this.current_window_average = score["total"];
+        this.last_score = score;
 
-        return score["total"];
+        return score;
     }
 
     /**

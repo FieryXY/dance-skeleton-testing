@@ -42,8 +42,11 @@ const FeedbackRequestSchema = {
                 additionalProperties: false,
             }
         },
+        playbackRate: {
+            type: "number"
+        },
     },
-    required: ["startTimestamp", "endTimestamp", "scoreData", "timestampMappings"],
+    required: ["startTimestamp", "endTimestamp", "scoreData", "timestampMappings", "playbackRate"],
     additionalProperties: false,
 };
 const MiniFeedbackRequestSchema = {
@@ -52,8 +55,9 @@ const MiniFeedbackRequestSchema = {
         startTimestamp: { type: "number" },
         endTimestamp: { type: "number" },
         originalRecommendation: { type: "string" },
+        playbackRate: { type: "number" },
     },
-    required: ["startTimestamp", "endTimestamp", "originalRecommendation"],
+    required: ["startTimestamp", "endTimestamp", "originalRecommendation", "playbackRate"],
     additionalProperties: false,
 };
 const GeminiFeedbackResponseSchema = {

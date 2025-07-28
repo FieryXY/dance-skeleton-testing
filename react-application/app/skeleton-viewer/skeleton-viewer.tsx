@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import type { Route } from "react-router";
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import '@tensorflow/tfjs-backend-webgl';
@@ -12,7 +12,8 @@ interface SkeletonViewerProps {
   useWebcam: boolean,
   mediaStream: MediaStream | null,
   width?: number,
-  height?: number
+  height?: number,
+  badKeypointsProp: string[]
 }
 
 export default function SkeletonViewer({
@@ -20,13 +21,23 @@ export default function SkeletonViewer({
   useWebcam,
   mediaStream,
   width = 800,
-  height = 800
+  height = 800,
+  badKeypointsProp = [],
 }: SkeletonViewerProps) {
 	  // useRef to get a reference to the video element
   const videoRef = useRef<HTMLVideoElement>(null);
   // useState to store and display any error messages
   const [error, setError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const mirrorRef = useRef<boolean>(false);
+  const badKeypointsRef = useRef<string[]>([]);
+
+  const getMirror = useCallback(() => mirrorRef.current, []);
+  const getBadKeypoints = useCallback(() => badKeypointsRef.current, []);
+
+  useEffect(() => {
+    badKeypointsRef.current = badKeypointsProp;
+  }, [badKeypointsProp])
 
   // This handles streaming webcam to video element and skeleton processing
   useEffect(() => {
@@ -59,7 +70,7 @@ export default function SkeletonViewer({
         const videoTrack = stream.getVideoTracks()[0];
         const trackProcessor = new MediaStreamTrackProcessor({ track: videoTrack });
         const trackGenerator = new MediaStreamTrackGenerator({ kind: "video" });
-        const transformer: TransformStream = createSkeletonVideoTransformer(reportPoses);
+        const transformer: TransformStream = createSkeletonVideoTransformer(reportPoses, getMirror, getBadKeypoints);
 
         trackProcessor.readable.pipeThrough(transformer).pipeTo(trackGenerator.writable);
         
@@ -97,22 +108,40 @@ export default function SkeletonViewer({
 
 	return (
 		<div id="container">
-			<video autoPlay={true} id="videoElement" 
-      style={{
-        backgroundColor: "gray"
-      }}
-			muted
-			playsInline
-			ref={videoRef}
-      width={width}
-      height={height}
-      />
-      <canvas
+      <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <video autoPlay={true} id="videoElement" 
+        style={{
+          backgroundColor: "gray"
+        }}
+        muted
+        playsInline
+        ref={videoRef}
         width={width}
         height={height}
-        style={{ display: 'block' }}
-        ref={canvasRef}
       />
+         { /* Mirror Toggle */ }
+        <button
+          onClick={() => mirrorRef.current = !mirrorRef.current}
+          style={{
+            position: "absolute",
+            top: "10px",
+            right: "10px",
+            padding: "6px 12px",
+            borderRadius: "4px",
+            border: "none",
+            backgroundColor: "#6c757d",
+            color: "#fff",
+          }}
+        >
+          Toggle Mirror
+      </button>
+      </div>
+      <canvas
+          width={width}
+          height={height}
+          style={{ display: 'block' }}
+          ref={canvasRef}
+        />
 		</div>
 	);
 }

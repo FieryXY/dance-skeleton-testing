@@ -270,7 +270,7 @@ router.post('/getMiniFeedback/:id', upload.fields([
     ];
 
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.5-pro",
       contents: contents,
       config: {
         responseMimeType: "application/json",
@@ -390,7 +390,7 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
     ];
 
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.5-pro",
       contents: contents,
       config: {
         responseMimeType: "application/json",

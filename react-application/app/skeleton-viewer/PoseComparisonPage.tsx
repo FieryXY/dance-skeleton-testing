@@ -1,11 +1,14 @@
 import React, { useState, useRef, useEffect } from "react";
+import type { RefObject } from "react";
 import SkeletonViewer from "./skeleton-viewer"; // Adjust path as needed
+import VideoPlayer from "../video-player/VideoPlayer";
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import type { LevelData, TimestampedPoses, FeedbackResponse, MiniFeedbackResponse, ProcessedFeedbackRecommendation } from "~/api/endpoints";
 import endpoints from "~/api/endpoints";
-import { SessionScorer } from "./utils";
+import { angles_to_consider, SessionScorer } from "./utils";
 
 const FEED_SIZE = 500; // Square size in pixels
+const BAD_KEYPOINT_THRESHOLD = 30;
 
 export default function PoseComparisonPage() {
   const [webcamPose, setWebcamPose] = useState<TimestampedPoses[]>([]);
@@ -15,20 +18,13 @@ export default function PoseComparisonPage() {
   const [annotatedVideoUrl, setAnnotatedVideoUrl] = useState<string | null>(null);
   const scorerRef = useRef<SessionScorer | null>(null);
   const [windowScore, setWindowScore] = useState<number | null>(null);
+  const [badKeypoints, setBadKeypoints] = useState<string[]>([]);
   // Feedback dialog state
   const [feedbackData, setFeedbackData] = useState<FeedbackResponse | null>(null);
   const [miniFeedbackData, setMiniFeedbackData] = useState<MiniFeedbackResponse | null>(null);
   const [showFeedbackModal, setShowFeedbackModal] = useState<boolean>(false);
   // Loading indicator for Gemini calls
   const [loading, setLoading] = useState<boolean>(false);
-
-  // Helper to format milliseconds into mm:ss:ms (e.g., 01:23:456)
-  const formatTime = (ms: number) => {
-    const minutes = Math.floor(ms / 60000).toString().padStart(2, '0');
-    const seconds = Math.floor((ms % 60000) / 1000).toString().padStart(2, '0');
-    const milliseconds = Math.floor(ms % 1000).toString().padStart(3, '0');
-    return `${minutes}:${seconds}:${milliseconds}`;
-  };
 
   // Mini-interval session state
   const [miniMode, setMiniMode] = useState<boolean>(false);
@@ -47,16 +43,19 @@ export default function PoseComparisonPage() {
   const timeUpdateListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => any) | null>(null);
   // Interval interaction state
   const [activeIntervalIndex, setActiveIntervalIndex] = useState<number | null>(null);
-  const [interactionMode, setInteractionMode] = useState<"preview" | "try" | null>(null);
+  const [interactionMode, setInteractionMode] = useState<"preview" | "try" | "loop" | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [afterInterval, setAfterInterval] = useState<boolean>(false);
   // custom interval selection
   const [customStart, setCustomStart] = useState<number | null>(null);
   const [customEnd, setCustomEnd] = useState<number | null>(null);
   // Ref to keep latest interactionMode value inside callbacks
-  const interactionModeRef = useRef<"preview" | "try" | null>(null);
+  const interactionModeRef = useRef<"preview" | "try" | "loop" | null>(null);
   const webcamMediaRecorderRef = useRef<MediaRecorder | null>(null);
   const webcamRecordingStartTimestampRef = useRef<number | null>(null);
+  // Playback rate state for VideoPlayer
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const handlePlaybackRateChange = (rate: number) => setPlaybackRate(rate);
 
   // Keep ref in sync with state
   useEffect(() => {
@@ -70,8 +69,22 @@ export default function PoseComparisonPage() {
     if (scorerRef.current && interactionModeRef.current === "try" && webcamRecordingStartTimestampRef.current && webcamMediaRecorderRef.current) {
       data.timestamp = Date.now() - webcamRecordingStartTimestampRef.current;
       const score = scorerRef.current.consumePose(data, originalTimestamp);
-      if (typeof score === "number") {
-        setWindowScore(score);
+      if (typeof score["total"] === "number") {
+        setWindowScore(score["total"]);
+      }
+
+      if (score) {
+        const badKeypoints: string[] = [];
+        for (const angleName in score) {
+          if (angleName === "total") continue;
+          if (typeof score[angleName] === "number" && score[angleName] < BAD_KEYPOINT_THRESHOLD) {
+            const middleKeypoint = angles_to_consider[angleName]["keypoints"][1];
+            if (middleKeypoint) {
+              badKeypoints.push(middleKeypoint);
+            }
+          }
+        }
+        setBadKeypoints(badKeypoints);
       }
     }
   };
@@ -94,7 +107,7 @@ export default function PoseComparisonPage() {
   };
 
   // Helper to actually play an arbitrary segment
-  const playSegment = (startMs: number, endMs: number) => {
+  const playSegment = (startMs: number, endMs: number, loop: boolean = false) => {
     if (!videoRef.current) return;
     const video = videoRef.current;
 
@@ -117,7 +130,18 @@ export default function PoseComparisonPage() {
       }
     };
 
-    video.addEventListener("timeupdate", handleTimeUpdate);
+    const handleTimeUpdateForLoop = () => {
+      if (video.currentTime * 1000 >= endMs) {
+        video.currentTime = startMs / 1000; // Loop back to start
+      }
+    }
+
+    if(loop) {
+      video.addEventListener("timeupdate", handleTimeUpdateForLoop);
+    }
+    else {
+      video.addEventListener("timeupdate", handleTimeUpdate);
+    }
     timeUpdateListenerRef.current = handleTimeUpdate;
 
     // Start playback
@@ -125,10 +149,10 @@ export default function PoseComparisonPage() {
   };
 
   // Helper: play segment by interval index
-  const startVideoSegment = (intervalIdx: number) => {
+  const startVideoSegment = (intervalIdx: number, loop: boolean = false) => {
     if (!levelData) return;
     const [startMs, endMs] = levelData.intervals[intervalIdx];
-    playSegment(startMs, endMs);
+    playSegment(startMs, endMs, loop);
   };
 
   // Called whenever an interval finishes (preview or try)
@@ -206,20 +230,23 @@ export default function PoseComparisonPage() {
             prevVideo,
             miniRecommendation.startTimestamp!,
             miniRecommendation.endTimestamp!,
-            miniRecommendation.description
+            miniRecommendation.description,
+            playbackRate
           );
 
           setMiniFeedbackData(miniResp);
         } else {
-          const feedback = await endpoints.getFeedback(
-            objectId,
-            file,
-            sessionSummary.beginTimestamp,
-            sessionSummary.endTimestamp,
-            scorerRef.current.getTimestampScores() ?? [],
-            sessionSummary.intervalScores[0]
-          );
-          setFeedbackData(feedback);
+          // TODO: Uncomment this!
+          // const feedback = await endpoints.getFeedback(
+          //   objectId,
+          //   file,
+          //   sessionSummary.beginTimestamp,
+          //   sessionSummary.endTimestamp,
+          //   scorerRef.current.getTimestampScores() ?? [],
+          //   sessionSummary.intervalScores[0],
+          //   playbackRate
+          // );
+          // setFeedbackData(feedback);
           // Store big interval attempt for potential mini sessions
           setLastBigAttemptFile(file);
         }
@@ -250,6 +277,13 @@ export default function PoseComparisonPage() {
     setAfterInterval(false);
     startVideoSegment(idx);
   };
+
+  const loopInterval = (idx: number) => {
+    setActiveIntervalIndex(idx);
+    setInteractionMode("loop");
+    setAfterInterval(false);
+    startVideoSegment(idx, true);
+  }
 
   // Try It button handler
   const tryInterval = async (idx: number) => {
@@ -331,6 +365,14 @@ export default function PoseComparisonPage() {
     playSegment(customStart, customEnd);
   };
 
+  const loopCustom = () => {
+    if (customStart === null || customEnd === null || customStart >= customEnd) return;
+    setActiveIntervalIndex(null);
+    setInteractionMode("loop");
+    setAfterInterval(false);
+    playSegment(customStart, customEnd, true);
+  }
+
   const tryCustom = async () => {
     if (!levelData || customStart === null || customEnd === null || customStart >= customEnd) return;
     setActiveIntervalIndex(null);
@@ -349,20 +391,22 @@ export default function PoseComparisonPage() {
     setCountdown(3);
   };
 
+  // Helper to format milliseconds into mm:ss:ms (e.g., 01:23:456)
+  const formatTime = (ms: number) => {
+    const minutes = Math.floor(ms / 60000).toString().padStart(2, '0');
+    const seconds = Math.floor((ms % 60000) / 1000).toString().padStart(2, '0');
+    const milliseconds = Math.floor(ms % 1000).toString().padStart(3, '0');
+    return `${minutes}:${seconds}:${milliseconds}`;
+  };
+
   const feedContainerStyle = {
     width: FEED_SIZE,
     height: FEED_SIZE,
-    backgroundColor: "#f0f0f0",
+    backgroundColor: "transparent",
     borderRadius: "8px",
     overflow: "hidden",
     display: "flex",
     flexDirection: "column" as const,
-  };
-
-  const feedStyle = {
-    width: "100%",
-    height: "100%",
-    objectFit: "cover" as const,
   };
 
   return (
@@ -394,6 +438,12 @@ export default function PoseComparisonPage() {
               >
                 Try It
               </button>
+              <button
+                onClick={() => loopInterval(idx)}
+                style={{ padding: "4px 12px", borderRadius: "4px", border: "none", backgroundColor: "#ffc107", color: "#000" }}
+              >
+                Loop
+              </button>
             </div>
           ))}
         </div>
@@ -414,6 +464,7 @@ export default function PoseComparisonPage() {
               mediaStream={null}
               width={FEED_SIZE}
               height={FEED_SIZE}
+              badKeypointsProp={badKeypoints}
             />
           </div>
         </div>
@@ -451,11 +502,13 @@ export default function PoseComparisonPage() {
           <div style={feedContainerStyle}>
             {annotatedVideoUrl ? (
               <div style={{ position: "relative", width: "100%", height: "100%" }}>
-                <video 
-                  src={annotatedVideoUrl} 
-                  controls 
-                  style={feedStyle}
-                  ref={videoRef}
+                <VideoPlayer
+                  src={annotatedVideoUrl}
+                  videoRef={videoRef as RefObject<HTMLVideoElement>}
+                  style={{ width: '100%', height: '100%' }}
+                  playbackRate={playbackRate}
+                  onPlaybackRateChange={handlePlaybackRateChange}
+                  freezePlaybackRate={interactionMode === 'try'}
                 />
                 {/* Countdown Overlay */}
                 {countdown !== null && (
@@ -527,6 +580,7 @@ export default function PoseComparisonPage() {
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <button onClick={previewCustom} disabled={customStart===null || customEnd===null || customStart>=customEnd} style={{ padding: "4px 12px", backgroundColor: "#6c757d", color: "#fff", border: "none", borderRadius: "4px" }}>Preview</button>
             <button onClick={tryCustom} disabled={customStart===null || customEnd===null || customStart>=customEnd} style={{ padding: "4px 12px", backgroundColor: "#28a745", color: "#fff", border: "none", borderRadius: "4px" }}>Try It</button>
+            <button onClick={loopCustom} disabled={customStart===null || customEnd===null || customStart>=customEnd} style={{ padding: "4px 12px", backgroundColor: "#ffc107", color: "#000", border: "none", borderRadius: "4px" }}>Loop</button>
           </div>
         </div>
       )}
@@ -549,6 +603,12 @@ export default function PoseComparisonPage() {
                 style={{ padding: "8px 14px", borderRadius: "4px", border: "none", backgroundColor: "#28a745", color: "#fff" }}>
                 Try It
               </button>
+              <button
+                onClick={() => loopInterval(activeIntervalIndex)}
+                style={{ padding: "8px 14px", borderRadius: "4px", border: "none", backgroundColor: "#ffc107", color: "#000" }}
+              >
+                Loop
+              </button>
             </>
           ) : (
             <>
@@ -559,6 +619,12 @@ export default function PoseComparisonPage() {
               <button onClick={tryCustom}
                 style={{ padding: "8px 14px", borderRadius: "4px", border: "none", backgroundColor: "#28a745", color: "#fff" }}>
                 Try It
+              </button>
+              <button
+                onClick={loopCustom}
+                style={{ padding: "8px 14px", borderRadius: "4px", border: "none", backgroundColor: "#ffc107", color: "#000" }}
+              >
+                Loop
               </button>
             </>
           )}

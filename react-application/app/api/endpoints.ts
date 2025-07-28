@@ -102,7 +102,7 @@ class Endpoints {
         });
     }
 
-    getFeedback = (objectId: string, video: File, startTimestamp: number, endTimestamp: number, poses: ScoredPose[], average_scores: Record<string, number>): Promise<FeedbackResponse> => {
+    getFeedback = (objectId: string, video: File, startTimestamp: number, endTimestamp: number, poses: ScoredPose[], average_scores: Record<string, number>, playbackRate: number): Promise<FeedbackResponse> => {
         const formData = new FormData();
         formData.append("video", video);
 
@@ -113,7 +113,8 @@ class Endpoints {
             timestampMappings: poses.map(pose => ({
                 originalTimestamp: pose.originalTimestamp,
                 mappedTimestamp: pose.webcamTimestamp,
-            }))
+            })),
+            playbackRate: playbackRate,
         }
 
         formData.append("data", JSON.stringify(jsonData));
@@ -137,7 +138,7 @@ class Endpoints {
         });
     }
 
-    getMiniFeedback = (objectId: string, video: File, previousVideo: File, startTimestamp: number, endTimestamp: number, originalRecommendation: string): Promise<MiniFeedbackResponse> => {
+    getMiniFeedback = (objectId: string, video: File, previousVideo: File, startTimestamp: number, endTimestamp: number, originalRecommendation: string, playbackRate: number): Promise<MiniFeedbackResponse> => {
         const formData = new FormData();
         formData.append("video", video);
         formData.append("previousVideo", previousVideo);
@@ -146,6 +147,7 @@ class Endpoints {
             startTimestamp: startTimestamp,
             endTimestamp: endTimestamp,
             originalRecommendation: originalRecommendation,
+            playbackRate: playbackRate,
         }
 
         formData.append("data", JSON.stringify(jsonData));
