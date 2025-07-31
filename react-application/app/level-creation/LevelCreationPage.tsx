@@ -1,8 +1,11 @@
 import React, { useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import endpoints from "~/api/endpoints";
 import type { LevelCreationData } from "~/api/endpoints";
 
 export default function LevelCreationPage() {
+    const navigate = useNavigate();
+
     // Form state
     const [title, setTitle] = useState<string>("");
     const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -86,6 +89,24 @@ export default function LevelCreationPage() {
     /* ------------------ UI ------------------ */
     return (
         <div style={{ maxWidth: 800, margin: "0 auto", padding: "2rem", color: "#fff" }}>
+            {/* Back Button */}
+            <button
+                onClick={() => navigate("/")}
+                style={{
+                    position: "absolute",
+                    top: "1rem",
+                    left: "1rem",
+                    padding: "0.5rem 1rem",
+                    backgroundColor: "#6c757d",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: "4px",
+                    cursor: "pointer",
+                }}
+            >
+                Back
+            </button>
+
             <h1 style={{ fontSize: "2rem", fontWeight: "bold", marginBottom: "1rem" }}>Create New Level</h1>
 
             <label style={{ display: "block", marginBottom: "0.5rem" }}>

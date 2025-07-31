@@ -136,7 +136,7 @@ export function convertToMp4(inputPath: string, outputPath: string): Promise<voi
     });
   }
 
-  export async function prepareFeedbackBase64s(objectId: string, uploadedFilePath: string, startTimestamp: number, endTimestamp: number): Promise<{originalVideoBase64: string, uploadedVideoBase64: string}> {
+  export async function prepareFeedbackBase64s(objectId: string, uploadedFilePath: string, startTimestamp: number, endTimestamp: number, playbackRate: number): Promise<{originalVideoBase64: string, uploadedVideoBase64: string}> {
     if(!mongoose.connection.db) {
         throw new Error("Error connecting with database");
     }
@@ -161,11 +161,23 @@ export function convertToMp4(inputPath: string, outputPath: string): Promise<voi
 
       // Write buffer to a temp file
     const tempInput = temp.path({ suffix: '.mp4' });
+    const tempInputPlaybackAdjusted = temp.path({ suffix: '.mp4' });
     const tempOutput = temp.path({ suffix: '.mp4' });
     fs.writeFileSync(tempInput, originalVideoBuffer);
 
+    // Change the playback rate of the original video in the temp mp4 file
+    console.log(`Adjusting playback rate to ${playbackRate}x for video at ${tempInput}`);
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(tempInput)
+        .videoFilters(`setpts=${1 / playbackRate}*PTS`)
+        .output(tempInputPlaybackAdjusted)
+        .on('end', () => resolve())
+        .on('error', (err) => reject(err))
+        .run();
+    });
+
     // Get the part of the video from startTimestamp to endTimestamp
-    await trimVideo(tempInput, tempOutput, startTimestamp, endTimestamp);
+    await trimVideo(tempInputPlaybackAdjusted, tempOutput, startTimestamp, endTimestamp);
 
     // Read the trimmed video and encode to base64
     const trimmedVideoBuffer = fs.readFileSync(tempOutput);

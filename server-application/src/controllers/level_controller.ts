@@ -233,7 +233,7 @@ router.post('/getMiniFeedback/:id', upload.fields([
       return;
     }
 
-    const {originalVideoBase64, uploadedVideoBase64} = await prepareFeedbackBase64s(req.params.id, videoPath, dataJSON.startTimestamp, dataJSON.endTimestamp);
+    const {originalVideoBase64, uploadedVideoBase64} = await prepareFeedbackBase64s(req.params.id, videoPath, dataJSON.startTimestamp, dataJSON.endTimestamp, dataJSON.playbackRate);
 
     const tempPreviousVideoPath = temp.path({ suffix: '.mp4' });
     await convertToMp4(previousVideoPath, tempPreviousVideoPath);
@@ -356,7 +356,7 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
 
     const scoreData = dataJSON.scoreData;
 
-    const {originalVideoBase64, uploadedVideoBase64} = await prepareFeedbackBase64s(req.params.id, inputPath, dataJSON.startTimestamp, dataJSON.endTimestamp);
+    const {originalVideoBase64, uploadedVideoBase64} = await prepareFeedbackBase64s(req.params.id, inputPath, dataJSON.startTimestamp, dataJSON.endTimestamp, dataJSON.playbackRate);
 
     let prompt = Constants.MAIN_FEEDBACK_PROMPT + "\n\n" + JSON.stringify(scoreData)
 

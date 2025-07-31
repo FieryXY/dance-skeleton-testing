@@ -1,6 +1,8 @@
 import { type RouteConfig, index, route } from "@react-router/dev/routes";
 
 export default [
-    index("skeleton-viewer/PoseComparisonPage.tsx"),
-    route("level-creation", "level-creation/LevelCreationPage.tsx")
+    route("/play/:objectId", "game-page/GamePage.tsx"),
+    route("level-creation", "level-creation/LevelCreationPage.tsx"),
+    route("/", "landing-page/LandingPage.tsx"),
+    // route("/calibration", "calibration/CalibrationPage.tsx")
 ] satisfies RouteConfig;

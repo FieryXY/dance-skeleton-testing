@@ -182,7 +182,7 @@ class Endpoints {
 
         formData.append("data", JSON.stringify(jsonData));
 
-        return fetch(`${BackendURL}/videos/trimVideo`, {
+        return fetch(`${BackendURL}/videos/trim`, {
             method: "POST",
             body: formData,
         })

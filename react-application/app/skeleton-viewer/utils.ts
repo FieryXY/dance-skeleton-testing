@@ -56,7 +56,7 @@ export const angles_to_consider: { [key: string]: {keypoints: string[], raw_weig
 }
 
 // Model and Detector Variables
-const SCORE_THRESHOLD = 0.3
+const SCORE_THRESHOLD = 0.4
 const PENALTY_FOR_OCCLUDED_KEYPOINT = -10
 const model: poseDetection.SupportedModels = poseDetection.SupportedModels.MoveNet;
 const modelType: string = poseDetection.movenet.modelType.SINGLEPOSE_THUNDER;
@@ -152,18 +152,19 @@ function drawKeypoints(keypoints: poseDetection.Keypoint[], ctx: OffscreenCanvas
             continue;
         }
 
-        if (keypoint.name && badKeypoints.includes(keypoint.name)) {
-            // Draw a blurry red circle for bad keypoints
-            ctx.save();
-            ctx.filter = 'blur(2px)';
-            ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
-            const badCircle = new Path2D();
-            badCircle.arc(keypoint.x, keypoint.y, 20, 0, 2 * Math.PI);
-            ctx.fill(badCircle);
-            ctx.restore();
-        }
-
         if (keypoint.score >= SCORE_THRESHOLD) { // Only draw confident points
+
+            if (keypoint.name && badKeypoints.includes(keypoint.name)) {
+                // Draw a blurry red circle for bad keypoints
+                ctx.save();
+                ctx.filter = 'blur(2px)';
+                ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
+                const badCircle = new Path2D();
+                badCircle.arc(keypoint.x, keypoint.y, 20, 0, 2 * Math.PI);
+                ctx.fill(badCircle);
+                ctx.restore();
+            }
+
             const circle = new Path2D();
             circle.arc(keypoint.x, keypoint.y, 4, 0, 2 * Math.PI);
             ctx.fill(circle);
@@ -303,16 +304,8 @@ function comparePosesByAngles2D(pose1: poseDetection.Pose, pose2: poseDetection.
         const angle_difference = Math.abs(angle_one - angle_two);
         const angle_score = 100 - (angle_difference * 100) / Math.PI;
 
-        const smoothing_factor = 0.01;
-
-        // Angle scores seem to be biased towards higher values, so we square them
-        const transformed_angle_score = smoothing_factor * angle_score * angle_score;
-
-        // Normalize the transformed angle score to be between 0 and 100 if it isn't already
-        let normalized_transformed_angle_score = (transformed_angle_score - 0)/(smoothing_factor * 100 * 100 - 0) * 100;
-
-        all_angle_scores[angle_name] = normalized_transformed_angle_score;
-        total_score += normalized_transformed_angle_score * raw_weight;
+        all_angle_scores[angle_name] = angle_score;
+        total_score += angle_score * raw_weight;
     }
     // Normalize the total score by the sum of the raw weights
     const sum_of_raw_weights = Object.values(angles_to_consider).reduce((sum, angle) => sum + angle.raw_weight, 0);

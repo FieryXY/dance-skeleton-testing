@@ -193,7 +193,7 @@ router.post('/getMiniFeedback/:id', upload.fields([
             res.status(400).send("Invalid JSON data uploaded for feedback request");
             return;
         }
-        const { originalVideoBase64, uploadedVideoBase64 } = await prepareFeedbackBase64s(req.params.id, videoPath, dataJSON.startTimestamp, dataJSON.endTimestamp);
+        const { originalVideoBase64, uploadedVideoBase64 } = await prepareFeedbackBase64s(req.params.id, videoPath, dataJSON.startTimestamp, dataJSON.endTimestamp, dataJSON.playbackRate);
         const tempPreviousVideoPath = temp.path({ suffix: '.mp4' });
         await convertToMp4(previousVideoPath, tempPreviousVideoPath);
         const previousUploadedVideoBase64 = fs.readFileSync(tempPreviousVideoPath, { encoding: 'base64' });
@@ -296,7 +296,7 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
         // Remove empty notes
         relevant_notes = relevant_notes.filter(note => note.trim().length != 0);
         const scoreData = dataJSON.scoreData;
-        const { originalVideoBase64, uploadedVideoBase64 } = await prepareFeedbackBase64s(req.params.id, inputPath, dataJSON.startTimestamp, dataJSON.endTimestamp);
+        const { originalVideoBase64, uploadedVideoBase64 } = await prepareFeedbackBase64s(req.params.id, inputPath, dataJSON.startTimestamp, dataJSON.endTimestamp, dataJSON.playbackRate);
         let prompt = Constants.MAIN_FEEDBACK_PROMPT + "\n\n" + JSON.stringify(scoreData);
         if (relevant_notes.length > 0) {
             prompt = prompt + "\n\n" + Constants.INTERVAL_NOTES_PROMPT_ADDITION + "\n\n" + relevant_notes.join("\n");
