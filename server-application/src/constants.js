@@ -21,12 +21,13 @@ const Constants = {
     * Provide concrete, specific actions the user can take to improve. Avoid vague advice.
     * Primarily utilize the original choreography video as a reference for your recommendations.
 3.  Precise Timestamps:
-    * For each recommendation, identify the exact start and end timestamps in milliseconds ins the original choreography video where the core of the mistake occurs. Limit the range to a maximum of 5000 milliseconds.
+    * IMPORTANT CONTEXT: The video clip you are seeing does not start at 00:00:000. It is a segment taken from a longer video, and it begins at the timestamp {{START_TIMESTAMP_MS}} milliseconds. All timestamps you provide must be relative to the start of THIS CLIP. For example, if a mistake happens 2 seconds into the clip, you must return a startTimestamp of 2000.
+    * For each recommendation, identify the exact start and end timestamps in the original choreography video where the core of the mistake occurs. Limit the range to a maximum of 5000 milliseconds.
     * Briefly describe the specific move that happens during this timestamp (e.g., "during the pirouette," "on the arm wave").
 4.  Tone: The entire response must be in the second person ("you," "your") in an encouraging, and constructive tone as if to talk to the student directly.
 5.  Negative Constraints: Do not use vague language such as "fluidity", "energy", or "power". All feedback must be tied to a visual observation.
 
-Disregard the scores provided below, they are not relevant to your task. Focus on the videos and the recommendations:
+Here are some data points regarding the accuracy of the user's performance. Use these as a loose heuristic and primarily rely on the videos to provide feedback:
 `,
     INTERVAL_NOTES_PROMPT_ADDITION: `
     Also, the choreographer provided some notes of their own that may or may not be relevant to this segment of the choreography. You don't have to use then, but if they are relevant,

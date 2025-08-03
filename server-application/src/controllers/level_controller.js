@@ -11,7 +11,7 @@ import { FeedbackRequestSchema, GeminiFeedbackResponseSchema, GeminiMiniFeedback
 import { manualValidateSchema, validateID } from '../frontend_models/validate_schema.js';
 import Level from '../db_models/level_model.js';
 import mongoose from 'mongoose';
-import { GoogleGenAI, Type } from "@google/genai";
+import { HarmBlockThreshold, HarmCategory, GoogleGenAI, Type } from "@google/genai";
 import temp from 'temp';
 import Constants from '../constants.js';
 import { convertToMp4, drawResults, getTimestampMapping, getVideoInfo, prepareFeedbackBase64s } from './level_utils.js';
@@ -297,7 +297,7 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
         relevant_notes = relevant_notes.filter(note => note.trim().length != 0);
         const scoreData = dataJSON.scoreData;
         const { originalVideoBase64, uploadedVideoBase64 } = await prepareFeedbackBase64s(req.params.id, inputPath, dataJSON.startTimestamp, dataJSON.endTimestamp, dataJSON.playbackRate);
-        let prompt = Constants.MAIN_FEEDBACK_PROMPT + "\n\n" + JSON.stringify(scoreData);
+        let prompt = Constants.MAIN_FEEDBACK_PROMPT.replace('{{START_TIMESTAMP_MS}}', dataJSON.startTimestamp.toString()) + "\n\n" + JSON.stringify(scoreData);
         if (relevant_notes.length > 0) {
             prompt = prompt + "\n\n" + Constants.INTERVAL_NOTES_PROMPT_ADDITION + "\n\n" + relevant_notes.join("\n");
         }
@@ -328,6 +328,24 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
             model: "gemini-2.5-pro",
             contents: contents,
             config: {
+                safetySettings: [
+                    {
+                        category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+                        threshold: HarmBlockThreshold.BLOCK_NONE,
+                    },
+                    {
+                        category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                        threshold: HarmBlockThreshold.BLOCK_NONE,
+                    },
+                    {
+                        category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                        threshold: HarmBlockThreshold.BLOCK_NONE,
+                    },
+                    {
+                        category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                        threshold: HarmBlockThreshold.BLOCK_NONE,
+                    },
+                ],
                 responseMimeType: "application/json",
                 responseSchema: {
                     type: Type.OBJECT,
@@ -364,13 +382,14 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
                 }
             }
         });
+        console.log("Response from Gemini", response);
         if (!response.text) {
-            res.status(500).send("Error generating feedback");
+            res.status(500).send("Error generating feedback response");
             return;
         }
         const geminiResponseJSON = JSON.parse(response.text);
         if (!manualValidateSchema(GeminiFeedbackResponseSchema, geminiResponseJSON)) {
-            res.status(500).send("Error generating feedback");
+            res.status(500).send("Error generating feedback response 2");
             return;
         }
         const processedRecommendations = geminiResponseJSON.recommendations.map((recommendation) => {
