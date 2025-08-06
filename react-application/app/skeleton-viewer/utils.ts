@@ -58,14 +58,17 @@ export const angles_to_consider: { [key: string]: {keypoints: string[], raw_weig
 // Model and Detector Variables
 const SCORE_THRESHOLD = 0.4
 const PENALTY_FOR_OCCLUDED_KEYPOINT = -10
-const model: poseDetection.SupportedModels = poseDetection.SupportedModels.MoveNet;
+const model: poseDetection.SupportedModels = poseDetection.SupportedModels.BlazePose;
 const modelType: string = poseDetection.movenet.modelType.SINGLEPOSE_THUNDER;
 var detector: poseDetection.PoseDetector | null = null;
 
 // Asynchronously load the detector
 tf.ready().then(() => {
-    poseDetection.createDetector(model, {modelType}).then(result => {
-        detector = result
+    // poseDetection.createDetector(model, {modelType}).then(result => {
+    //     detector = result
+    // });
+    poseDetection.createDetector(model, {runtime: 'tfjs', modelType: 'full'}).then(result => {
+        detector = result;
     });
 });
 
@@ -169,6 +172,20 @@ function drawKeypoints(keypoints: poseDetection.Keypoint[], ctx: OffscreenCanvas
             circle.arc(keypoint.x, keypoint.y, 4, 0, 2 * Math.PI);
             ctx.fill(circle);
             ctx.stroke(circle);
+
+            // TEMP: Draw z value as white text next to the keypoint
+            if (typeof keypoint.z !== "undefined") {
+                ctx.save();
+                ctx.font = "12px sans-serif";
+                ctx.fillStyle = "white";
+                ctx.strokeStyle = "black";
+                ctx.lineWidth = 2;
+                const text = keypoint.z.toFixed(2);
+                // Draw black outline for readability
+                ctx.strokeText(text, keypoint.x + 8, keypoint.y - 8);
+                ctx.fillText(text, keypoint.x + 8, keypoint.y - 8);
+                ctx.restore();
+            }
         }
     }
 }
@@ -270,7 +287,6 @@ function comparePoses2D(pose1: poseDetection.Pose, pose2: poseDetection.Pose) {
 }
 
 function comparePosesByAngles2D(pose1: poseDetection.Pose, pose2: poseDetection.Pose): { [key: string]: number } {
-
     // First, remove all keypoints that have a score less than the threshold
     const pose1Points: Keypoint[] = pose1.keypoints.filter(kp => kp.score && kp.score >= SCORE_THRESHOLD);
     const pose2Points: Keypoint[] = pose2.keypoints.filter(kp => kp.score && kp.score >= SCORE_THRESHOLD);
@@ -316,6 +332,66 @@ function comparePosesByAngles2D(pose1: poseDetection.Pose, pose2: poseDetection.
     return all_angle_scores;
 }
 
+function comparePosesByAngles3D(pose1: poseDetection.Pose, pose2: poseDetection.Pose): { [key: string]: number } {
+    // First, remove all keypoints that have a score less than the threshold
+    if(!pose1.keypoints3D || !pose2.keypoints3D) {
+        console.warn("One of the poses does not have 3D keypoints. Showing poses now:");
+        console.log("Pose 1:", pose1);
+        console.log("Pose 2:", pose2);
+        return {"total": PENALTY_FOR_OCCLUDED_KEYPOINT};
+    }
+
+    const pose1Points: Keypoint[] = pose1.keypoints3D.filter(kp => kp.score && kp.score >= SCORE_THRESHOLD);
+    const pose2Points: Keypoint[] = pose2.keypoints3D.filter(kp => kp.score && kp.score >= SCORE_THRESHOLD);
+
+    let total_score = 0;
+
+    // Store the scores for each angle. The name for each angle is the name of the second keypoint of the angle
+    let all_angle_scores: Record<string, number> = {};
+
+    // Calculate the angle between the three points for each angle in the list
+    for(const angle_name in angles_to_consider) {
+        const angle = angles_to_consider[angle_name].keypoints;
+        const raw_weight = angles_to_consider[angle_name].raw_weight;
+        const kp1_one = pose1Points.find(kp => kp.name == angle[0]);
+        const kp1_two = pose1Points.find(kp => kp.name == angle[1]);
+        const kp1_three = pose1Points.find(kp => kp.name == angle[2]);
+
+        const kp2_one = pose2Points.find(kp => kp.name == angle[0]);
+        const kp2_two = pose2Points.find(kp => kp.name == angle[1]);
+        const kp2_three = pose2Points.find(kp => kp.name == angle[2]);
+
+        if(!kp1_one || !kp1_two || !kp1_three || !kp2_one || !kp2_two || !kp2_three) {
+            all_angle_scores[angle_name] = PENALTY_FOR_OCCLUDED_KEYPOINT;
+            total_score += all_angle_scores[angle_name] * raw_weight;
+            continue;
+        }
+
+        if(typeof kp1_one.z === "undefined" || typeof kp1_two.z === "undefined" || typeof kp1_three.z === "undefined" || typeof kp2_one.z === "undefined" || typeof kp2_two.z === "undefined" || typeof kp2_three.z === "undefined") {
+            all_angle_scores[angle_name] = PENALTY_FOR_OCCLUDED_KEYPOINT;
+            total_score += all_angle_scores[angle_name] * raw_weight;
+            console.log("ERROR: Can't find z attribute on some of the 3D skeletons");
+            continue;
+        }
+
+        const angle_one = calculateAngleFromPoints3D(kp1_one.x, kp1_one.y, kp1_one.z, kp1_two.x, kp1_two.y, kp1_two.z, kp1_three.x, kp1_three.y, kp1_three.z);
+        const angle_two = calculateAngleFromPoints3D(kp2_one.x, kp2_one.y, kp2_one.z, kp2_two.x, kp2_two.y, kp2_two.z, kp2_three.x, kp2_three.y, kp2_three.z);
+
+        const angle_difference = Math.abs(angle_one - angle_two);
+        const angle_score = 100 - (angle_difference * 100) / Math.PI;
+
+        all_angle_scores[angle_name] = angle_score;
+        total_score += angle_score * raw_weight;
+    }
+    // Normalize the total score by the sum of the raw weights
+    const sum_of_raw_weights = Object.values(angles_to_consider).reduce((sum, angle) => sum + angle.raw_weight, 0);
+    total_score /= sum_of_raw_weights;
+
+    all_angle_scores["total"] = total_score;
+
+    return all_angle_scores;
+}
+
 function calculateAngleFromPoints(x1: number, y1: number, x2: number, y2: number, x3: number, y3: number) {
     let angle = Math.atan2(y1 - y2, x1 - x2) - Math.atan2(y3 - y2, x3 - x2);
 
@@ -334,9 +410,29 @@ function calculateAngleFromPoints(x1: number, y1: number, x2: number, y2: number
     return angle;
 }
 
+function calculateAngleFromPoints3D(x1: number, y1: number, z1: number, x2: number, y2: number, z2: number, x3: number, y3: number, z3: number) {
+    const v1 = [x1 - x2, y1 - y2, z1 - z2];
+    const v2 = [x3 - x2, y3 - y2, z3 - z2];
+
+    const dotProduct = v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
+    const magnitudeV1 = Math.sqrt(v1[0] ** 2 + v1[1] ** 2 + v1[2] ** 2);
+    const magnitudeV2 = Math.sqrt(v2[0] ** 2 + v2[1] ** 2 + v2[2] ** 2);
+
+    let angle = Math.acos(dotProduct / (magnitudeV1 * magnitudeV2));
+
+    // Normalize the angle to be between 0 and 180 degrees
+    if (angle < 0) {
+        angle += Math.PI;
+    } else if (angle > Math.PI) {
+        angle -= Math.PI;
+    }
+
+    return angle;
+}
+
+
+
 // Scoring Class
-
-
 export interface ScoredPose {
     originalTimestamp: number;
     webcamTimestamp: number;
@@ -416,7 +512,7 @@ export class SessionScorer {
         }
 
         // Score the pose
-        const score = comparePosesByAngles2D(poses.poses[0], closestPose.poses[0]);
+        const score = comparePosesByAngles3D(poses.poses[0], closestPose.poses[0]);
         // Current behavior is that for each pose in the original level, we keep the most recent score from the webcam
         this.timestamp_scores = this.timestamp_scores.filter(score_pair => score_pair.originalTimestamp != closestPose.timestamp)
         // Insert [closestPose.timestamp, score] into timestamp_scores in sorted order by timestamp

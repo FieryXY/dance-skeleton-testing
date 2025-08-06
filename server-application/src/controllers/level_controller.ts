@@ -21,7 +21,7 @@ const router = express.Router();
 const upload = multer({ dest: 'uploads/' });
 dotenv.config();
 
-const MODEL = poseDetection.SupportedModels.MoveNet;
+const MODEL = poseDetection.SupportedModels.BlazePose;
 const MODEL_TYPE = poseDetection.movenet.modelType.SINGLEPOSE_THUNDER;
 
 const ai = new GoogleGenAI({
@@ -31,8 +31,17 @@ const ai = new GoogleGenAI({
 let detector: poseDetection.PoseDetector | null = null;
 
 (async () => {
+  await tf.setBackend('cpu');
   await tf.ready();
-  detector = await poseDetection.createDetector(MODEL, { modelType: MODEL_TYPE });
+  // @ts-ignore
+  if(MODEL == poseDetection.SupportedModels.MoveNet) {
+    console.log("Using MoveNet model for pose detection");
+    detector = await poseDetection.createDetector(MODEL, { modelType: MODEL_TYPE });
+  }
+  else if(MODEL == poseDetection.SupportedModels.BlazePose) {
+    console.log("Using BlazePose model for pose detection");
+    detector = await poseDetection.createDetector(MODEL, { runtime: 'tfjs', modelType: 'full' });
+  }
 })();
 
 interface TimestampedPose {

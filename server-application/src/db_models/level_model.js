@@ -33,9 +33,18 @@ const LevelSchema = new mongoose.Schema({
                                 score: { type: Number, required: true },
                                 name: { type: String, required: true }
                             }
-                        ]
+                        ],
+                        keypoints3D: [
+                            {
+                                x: { type: Number, required: true },
+                                y: { type: Number, required: true },
+                                z: { type: Number, required: true },
+                                score: { type: Number, required: true },
+                                name: { type: String, required: true }
+                            }
+                        ],
                     }
-                ]
+                ],
             }
         ],
         required: true
