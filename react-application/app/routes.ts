@@ -4,5 +4,5 @@ export default [
     route("/play/:objectId", "game-page/GamePage.tsx"),
     route("level-creation", "level-creation/LevelCreationPage.tsx"),
     route("/", "landing-page/LandingPage.tsx"),
-    // route("/calibration", "calibration/CalibrationPage.tsx")
+    route("/calibration-page", "calibration-page/CalibrationPage.tsx")
 ] satisfies RouteConfig;

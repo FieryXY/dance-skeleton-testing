@@ -90,7 +90,7 @@ export default function LandingPage() {
           Create Level
         </button>
         <button
-          onClick={() => navigate("/calibration")}
+          onClick={() => navigate("/calibration-page")}
           style={{
             padding: "0.75rem 1.5rem",
             fontSize: "1.25rem",
