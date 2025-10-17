@@ -538,6 +538,40 @@ export default function PoseComparisonPage() {
     }
   };
 
+  const handleCreateInterval = async () => {
+      if (customStart === null || customEnd === null || customStart >= customEnd || !objectId) {
+          alert("Please set a valid start and end time for the custom interval first.");
+          return;
+      }
+      try {
+          const updatedLevel = await endpoints.addInterval(objectId, customStart, customEnd);
+          setLevelData(updatedLevel); // This updates the UI with the new interval
+          alert(`Successfully created new interval! It is now Interval #${updatedLevel.intervals.length}.`);
+          // Reset custom interval selection
+          setCustomStart(null);
+          setCustomEnd(null);
+      } catch (err) {
+          alert("Failed to create the new interval.");
+          console.error(err);
+      }
+  };
+
+  const handleDeleteInterval = async (intervalIndex: number | null) => {
+    if (intervalIndex === null || !objectId) return;
+    if (confirm(`Are you sure you want to delete Interval #${intervalIndex + 1}?`)) {
+        try {
+            const updatedLevel = await endpoints.deleteInterval(objectId, intervalIndex);
+            setLevelData(updatedLevel);
+            alert(`Interval #${intervalIndex + 1} has been deleted.`);
+            // Return to interval selection mode
+            setControlMode('intervalSelect'); 
+            setActiveIntervalIndex(null);
+        } catch (err) {
+            alert("Failed to delete the interval.");
+            console.error(err);
+        }
+    }
+  };
   return (
     <div style={{ padding: "2rem", paddingBottom: "260px" }}>
       {/* Back Button */}
@@ -784,6 +818,20 @@ export default function PoseComparisonPage() {
                 >
                   Go
                 </button>
+                <button
+                  disabled={!hasCustom}
+                  onClick={handleCreateInterval}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: 8,
+                    border: 'none',
+                    background: hasCustom ? '#28a745' : '#adb5bd',
+                    color: '#fff',
+                    cursor: hasCustom ? 'pointer' : 'not-allowed'
+                  }}
+                >
+                  Create Interval
+                </button> 
               </div>
             </div>
           )}
@@ -797,6 +845,11 @@ export default function PoseComparisonPage() {
                 <button onClick={tryCurrent} style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#28a745', color: '#fff' }}>Try It</button>
                 {showRecAgainVisible && (
                   <button onClick={openRecommendations} style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#17a2b8', color: '#fff' }}>Show Recommendations Again</button>
+                )}
+                {activeIntervalIndex !== null && (
+                  <button onClick={() => handleDeleteInterval(activeIntervalIndex)} style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#dc3545', color: '#fff' }}>
+                    Delete Interval
+                  </button>
                 )}
                 {controlMode === 'recommendation' && (
                   <button

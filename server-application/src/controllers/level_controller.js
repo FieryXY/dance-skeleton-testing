@@ -177,6 +177,46 @@ router.get('/getAnnotatedVideo/:id', async (req, res) => {
         res.status(500).send('Error retrieving annotated video');
     }
 });
+router.put('/:id/intervals', async (req, res) => {
+    try {
+        const level = await Level.findById(req.params.id);
+        if (!level) {
+            return res.status(404).send('Level not found');
+        }
+        const { startTimestamp, endTimestamp } = req.body;
+        if (typeof startTimestamp !== 'number' || typeof endTimestamp !== 'number') {
+            return res.status(400).send('Invalid interval data');
+        }
+        level.intervals.push([startTimestamp, endTimestamp]);
+        await level.save();
+        res.json(level);
+    }
+    catch (err) {
+        res.status(500).send('Server error');
+    }
+});
+router.delete('/:id/intervals/:intervalIndex', async (req, res) => {
+    try {
+        const level = await Level.findById(req.params.id);
+        if (!level) {
+            return res.status(404).send('Level not found');
+        }
+        const intervalIndex = parseInt(req.params.intervalIndex, 10);
+        if (isNaN(intervalIndex) || intervalIndex < 0 || intervalIndex >= level.intervals.length) {
+            return res.status(400).send('Invalid interval index');
+        }
+        level.intervals.splice(intervalIndex, 1);
+        if (level.interval_notes && level.interval_notes.length > intervalIndex) {
+            level.interval_notes.splice(intervalIndex, 1);
+        }
+        await level.save();
+        res.json(level);
+    }
+    catch (err) {
+        console.error("Error deleting interval:", err);
+        res.status(500).send('Server error');
+    }
+});
 router.post('/getMiniFeedback/:id', upload.fields([
     { name: 'previousVideo', maxCount: 1 },
     { name: 'video', maxCount: 1 },

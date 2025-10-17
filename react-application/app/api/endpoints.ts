@@ -200,7 +200,42 @@ class Endpoints {
             throw error;
         });
     }
+    addInterval = (levelId: string, startTimestamp: number, endTimestamp: number): Promise<LevelData> => {
+        return fetch(`${BackendURL}/levels/${levelId}/intervals`, {
+            method: "PUT",
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ startTimestamp, endTimestamp }),
+        })
+        .then(async response => {
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Network response was not ok: ${errorText}`);
+            }
+            return response.json() as Promise<LevelData>;
+        })
+        .catch(error => {
+            console.error("Error adding interval:", error);
+            throw error;
+        });
+    }
+    deleteInterval = (levelId: string, intervalIndex: number): Promise<LevelData> => {
+        return fetch(`${BackendURL}/levels/${levelId}/intervals/${intervalIndex}`, {
+            method: "DELETE",
+        })
+        .then(async response => {
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Network response was not ok: ${errorText}`);
+            }
+            return response.json() as Promise<LevelData>;
+        })
+        .catch(error => {
+            console.error("Error deleting interval:", error);
+            throw error;
+        });
+    }
 }
-
 const instance = new Endpoints();
 export default instance;

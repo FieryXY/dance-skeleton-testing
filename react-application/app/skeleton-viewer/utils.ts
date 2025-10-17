@@ -56,7 +56,7 @@ export const angles_to_consider: { [key: string]: {keypoints: string[], raw_weig
 }
 
 // Model and Detector Variables
-const SCORE_THRESHOLD = 0.4
+const SCORE_THRESHOLD = 0.1
 const PENALTY_FOR_OCCLUDED_KEYPOINT = -10
 const model: poseDetection.SupportedModels = poseDetection.SupportedModels.BlazePose;
 const modelType: string = poseDetection.movenet.modelType.SINGLEPOSE_THUNDER;
