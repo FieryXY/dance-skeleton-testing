@@ -136,17 +136,36 @@ export function convertToMp4(inputPath: string, outputPath: string): Promise<voi
     });
   }
 
-  export async function prepareFeedbackBase64s(objectId: string, uploadedFilePath: string, startTimestamp: number, endTimestamp: number, playbackRate: number): Promise<{originalVideoBase64: string, uploadedVideoBase64: string}> {
+  export async function prepareFeedbackBase64s(objectId: string, uploadedFilePath: string, startTimestamp: number, endTimestamp: number, playbackRate: number, slowFactor: number = 1): Promise<{originalVideoBase64: string, uploadedVideoBase64: string}> {
     if(!mongoose.connection.db) {
         throw new Error("Error connecting with database");
     }
 
-    // Convert the uploaded video to mp4
-    const tempUploadedPath = temp.path({ suffix: '.mp4' });
-    await convertToMp4(uploadedFilePath, tempUploadedPath);
+  // Convert the uploaded video to mp4
+  const tempUploadedPath = temp.path({ suffix: '.mp4' });
+  await convertToMp4(uploadedFilePath, tempUploadedPath);
 
-    // Get the base64 encoding for the uploaded video
-    const uploadedVideoBase64 = fs.readFileSync(tempUploadedPath, { encoding: 'base64' });
+  // If we need to adjust playback (including an extra slowFactor), create an adjusted uploaded file
+  let finalUploadedPath = tempUploadedPath;
+  const safePlaybackRate = (playbackRate && playbackRate > 0) ? playbackRate : 1;
+  const appliedSetpts = slowFactor * (1 / safePlaybackRate);
+  if (appliedSetpts !== 1) {
+    const tempUploadedPlaybackAdjusted = temp.path({ suffix: '.mp4' });
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(tempUploadedPath)
+        .videoFilters(`setpts=${appliedSetpts}*PTS`)
+        // drop audio to avoid extremely slow audio artifacts
+        .noAudio()
+        .output(tempUploadedPlaybackAdjusted)
+        .on('end', () => resolve())
+        .on('error', (err) => reject(err))
+        .run();
+    });
+    finalUploadedPath = tempUploadedPlaybackAdjusted;
+  }
+
+  // Get the base64 encoding for the uploaded video (possibly playback-adjusted)
+  const uploadedVideoBase64 = fs.readFileSync(finalUploadedPath, { encoding: 'base64' });
 
     const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db);
 
@@ -165,11 +184,17 @@ export function convertToMp4(inputPath: string, outputPath: string): Promise<voi
     const tempOutput = temp.path({ suffix: '.mp4' });
     fs.writeFileSync(tempInput, originalVideoBuffer);
 
-    // Change the playback rate of the original video in the temp mp4 file
-    console.log(`Adjusting playback rate to ${playbackRate}x for video at ${tempInput}`);
+    // Change the playback rate of the original video in the temp mp4 file.
+    // We apply both the requested playbackRate and the extra slowFactor so callers can ask for
+    // a combined adjustment (e.g. slowFactor=100 to slow 100x before sending to Gemini).
+    const safePlaybackRate2 = (playbackRate && playbackRate > 0) ? playbackRate : 1;
+    const appliedSetptsOriginal = slowFactor * (1 / safePlaybackRate2);
+    console.log(`Adjusting playback rate (setpts=${appliedSetptsOriginal}) for video at ${tempInput}`);
     await new Promise<void>((resolve, reject) => {
       ffmpeg(tempInput)
-        .videoFilters(`setpts=${1 / playbackRate}*PTS`)
+        .videoFilters(`setpts=${appliedSetptsOriginal}*PTS`)
+        // drop audio to avoid extremely slow audio artifacts
+        .noAudio()
         .output(tempInputPlaybackAdjusted)
         .on('end', () => resolve())
         .on('error', (err) => reject(err))
