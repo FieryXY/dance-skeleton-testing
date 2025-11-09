@@ -860,7 +860,7 @@ export default function PoseComparisonPage() {
                 <button onClick={loopCurrent} style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#ffc107', color: '#000' }}>Loop</button>
                 <button onClick={tryCurrent} style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#28a745', color: '#fff' }}>Try It</button>
                 {/* Show a button to replay the full last big attempt when available */}
-                {lastBigAttemptFile && (
+                {lastBigAttemptFile && !miniMode && (
                   <button
                     onClick={handleWatchLastAttemptEntireVideo}
                     style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#6f42c1', color: '#fff' }}
