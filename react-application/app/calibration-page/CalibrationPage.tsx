@@ -10,6 +10,7 @@ import { SessionScorer} from "../skeleton-viewer/utils";
 
 const FEED_SIZE = 500;
 const EXAMPLE_SCORE_THRESHOLD = 95; // Just for display text
+const OFFSET_TOLERANCE = 200; // maximum offset in ms we will test for
 const CALIBRATION_LEVEL_ID = "6902fa6a5f72ae637347c820";
 
 /* ------------------------ PAGE --------------------------- */
@@ -117,6 +118,14 @@ export default function CalibrationPage() {
 
   // Placeholder for finish function
   const finish = () => {
+
+    // Compute the offset
+    const computedOffset = (scorerRef.current) ? scorerRef.current.findOptimalOffset(OFFSET_TOLERANCE) : 0;
+    setResultText(`Result: Offset: ${computedOffset} ms`);
+
+    // Store the offset in localStorage
+    localStorage.setItem("calibrationOffsetMs", computedOffset.toString());
+
     console.log("Calibration finished (logic removed)");
     setStatus("done");
     scorerRef.current = null;
@@ -126,11 +135,6 @@ export default function CalibrationPage() {
       videoRef.current.onended = null; // Clear the event handler
     }
     // --- End of new block ---
-
-    // Display a placeholder result message
-    const fakeOffset = Math.round((Math.random() - 0.5) * 500); // Example offset
-    setResultText(`Placeholder Result: Offset: ${fakeOffset} ms`);
-    // Original calculation and saving logic removed
   };
 
   // Determine if the start button should be enabled (simplified)
