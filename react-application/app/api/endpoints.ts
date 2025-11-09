@@ -192,8 +192,23 @@ class Endpoints {
                 throw new Error(`Network response was not ok: ${errorText}`);
             }
 
-            const blob = await response.blob();
-            return new File([blob], video.name, { type: video.type });
+            // const blob = await response.blob();
+            // return new File([blob], video.name, { type: video.type });
+
+            // Returns a JSON with a key "trimmedVideoBase64"
+            const data = await response.json();
+            const base64String = data.trimmedVideoBase64 as string;
+
+            // Convert base64 string back to File
+            const byteCharacters = atob(base64String);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const trimmedVideoFile = new File([byteArray], video.name, { type: video.type });
+            
+            return trimmedVideoFile;
         })
         .catch(error => {
             console.error("Error trimming video:", error);
