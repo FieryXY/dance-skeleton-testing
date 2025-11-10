@@ -14,7 +14,7 @@ import mongoose from 'mongoose';
 import { HarmBlockThreshold, HarmCategory, GoogleGenAI, Type } from "@google/genai";
 import temp from 'temp';
 import Constants from '../constants.js';
-import { convertToMp4, drawResults, getTimestampMapping, getVideoInfo, prepareFeedbackBase64s } from './level_utils.js';
+import { convertToMp4, drawResults, getTimestampMapping, getVideoInfo, prepareFeedbackBase64s, stitchVideosSideBySide } from './level_utils.js';
 import * as dotenv from 'dotenv';
 const router = express.Router();
 const upload = multer({ dest: 'uploads/' });
@@ -367,9 +367,10 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
         // Remove empty notes
         relevant_notes = relevant_notes.filter(note => note.trim().length != 0);
         const scoreData = dataJSON.scoreData;
-        // Slow videos by 5x before sending to Gemini so Gemini sees slow-motion: pass slowFactor=5
+        // Slow videos by 100x before sending to Gemini so Gemini sees slow-motion: pass slowFactor=5
         const slowFactor = 5;
         const { originalVideoBase64, uploadedVideoBase64 } = await prepareFeedbackBase64s(req.params.id, inputPath, dataJSON.startTimestamp, dataJSON.endTimestamp, dataJSON.playbackRate, slowFactor);
+        const stitchedVideoBase64 = await stitchVideosSideBySide(originalVideoBase64, uploadedVideoBase64, 0);
         let prompt = Constants.MAIN_FEEDBACK_PROMPT.replace('{{START_TIMESTAMP_MS}}', dataJSON.startTimestamp.toString()) + "\n\n" + JSON.stringify(scoreData);
         if (relevant_notes.length > 0) {
             prompt = prompt + "\n\n" + Constants.INTERVAL_NOTES_PROMPT_ADDITION + "\n\n" + relevant_notes.join("\n");
@@ -443,15 +444,15 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
                                     description: {
                                         type: Type.STRING,
                                     },
-                                    startTimestamp: {
+                                    startTimestampMs: {
                                         type: Type.NUMBER,
                                     },
-                                    endTimestamp: {
+                                    endTimestampMs: {
                                         type: Type.NUMBER,
                                     },
                                 },
                                 required: ["title", "description"],
-                                propertyOrdering: ["title", "description", "startTimestamp", "endTimestamp"],
+                                propertyOrdering: ["title", "description", "startTimestampMs", "endTimestampMs"],
                                 additionalProperties: false,
                             }
                         }
@@ -473,17 +474,17 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
         }
         const processedRecommendations = geminiResponseJSON.recommendations.map((recommendation) => {
             // If Gemini supplied no timestamps, return as-is
-            if (!recommendation.startTimestamp || !recommendation.endTimestamp) {
+            if (!recommendation.startTimestampMs || !recommendation.endTimestampMs) {
                 return recommendation;
             }
             // Gemini saw videos slowed by `slowFactor`. Convert those timestamps back by dividing by slowFactor.
-            const adjStart = recommendation.startTimestamp / slowFactor;
-            const adjEnd = recommendation.endTimestamp / slowFactor;
+            const adjStart = recommendation.startTimestampMs / slowFactor;
+            const adjEnd = recommendation.endTimestampMs / slowFactor;
             const mappedStartTimestamp = getTimestampMapping(dataJSON.startTimestamp + adjStart, dataJSON);
             const mappedEndTimestamp = getTimestampMapping(dataJSON.startTimestamp + adjEnd, dataJSON);
             if (!mappedStartTimestamp || !mappedEndTimestamp) {
-                // Return recommendation without startTimestamp and endTimestamp
-                const { startTimestamp, endTimestamp, ...baseRecommendation } = recommendation;
+                // Return recommendation without startTimestampMs and endTimestampMs
+                const { startTimestampMs, endTimestampMs, ...baseRecommendation } = recommendation;
                 return baseRecommendation;
             }
             return {

@@ -239,6 +239,9 @@ export default function PoseComparisonPage() {
           let prevVideo = previousMiniAttemptFile;
 
           if(prevVideo == null && lastBigAttemptFile) {
+            // Extend range by 1 second on either side
+            miniRecommendation.mappedStartTimestamp! -= 1000;
+            miniRecommendation.mappedEndTimestamp! += 1000;
             prevVideo = await endpoints.trimVideo(lastBigAttemptFile, miniRecommendation.mappedStartTimestamp!, miniRecommendation.mappedEndTimestamp!);
           }
 

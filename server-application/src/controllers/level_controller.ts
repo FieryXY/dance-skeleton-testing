@@ -14,7 +14,7 @@ import mongoose from 'mongoose';
 import { HarmBlockThreshold, HarmCategory, Content, GoogleGenAI, Type } from "@google/genai";
 import temp from 'temp';
 import Constants from '../constants.js';
-import { convertToMp4, drawResults, getTimestampMapping, getVideoInfo, prepareFeedbackBase64s, trimVideo } from './level_utils.js';
+import { convertToMp4, drawResults, getTimestampMapping, getVideoInfo, prepareFeedbackBase64s, stitchVideosSideBySide, trimVideo } from './level_utils.js';
 import * as dotenv from 'dotenv'
 
 const router = express.Router();
@@ -291,7 +291,7 @@ router.post('/getMiniFeedback/:id', upload.fields([
     }
 
     // Slow both videos by 100x before sending to Gemini by passing slowFactor=100.
-    const slowFactor = 100;
+    const slowFactor = 5;
     const {originalVideoBase64, uploadedVideoBase64} = await prepareFeedbackBase64s(req.params.id, videoPath, dataJSON.startTimestamp, dataJSON.endTimestamp, dataJSON.playbackRate, slowFactor);
 
     // Convert and slow the previous video (the user's previous performance) by the same slowFactor.
@@ -319,27 +319,27 @@ router.post('/getMiniFeedback/:id', upload.fields([
               mimeType: "video/mp4",
               data: previousUploadedVideoBase64 as string
             },
-            // videoMetadata: {
-            //   fps: 24
-            // }
+            videoMetadata: {
+              fps: 24
+            }
           },
           {
             inlineData: {
               mimeType: "video/mp4",
               data: uploadedVideoBase64 as string
             },
-            // videoMetadata: {
-            //   fps: 24
-            // }
+            videoMetadata: {
+              fps: 24
+            }
           },
           {
             inlineData: {
               mimeType: "video/mp4",
               data: originalVideoBase64 as string
             },
-            // videoMetadata: {
-            //   fps: 24
-            // }
+            videoMetadata: {
+              fps: 24
+            }
           },
           {
             text: Constants.MINI_FEEDBACK_PROMPT + "\n\n" + dataJSON.originalRecommendation
@@ -435,9 +435,10 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
 
     const scoreData = dataJSON.scoreData;
 
-  // Slow videos by 5x before sending to Gemini so Gemini sees slow-motion: pass slowFactor=5
-  const slowFactor = 100;
+  // Slow videos by 100x before sending to Gemini so Gemini sees slow-motion: pass slowFactor=5
+  const slowFactor = 5;
   const {originalVideoBase64, uploadedVideoBase64} = await prepareFeedbackBase64s(req.params.id, inputPath, dataJSON.startTimestamp, dataJSON.endTimestamp, dataJSON.playbackRate, slowFactor);
+  const stitchedVideoBase64 = await stitchVideosSideBySide(originalVideoBase64, uploadedVideoBase64, 0);
 
     let prompt = Constants.MAIN_FEEDBACK_PROMPT.replace('{{START_TIMESTAMP_MS}}', dataJSON.startTimestamp.toString()) + "\n\n" + JSON.stringify(scoreData);
 
@@ -456,18 +457,18 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
               mimeType: "video/mp4",
               data: originalVideoBase64 as string
             },
-            // videoMetadata: {
-            //   fps: 24
-            // }
+            videoMetadata: {
+              fps: 24
+            }
           },
           {
             inlineData: {
               mimeType: "video/mp4",
               data: uploadedVideoBase64 as string
             },
-            // videoMetadata: {
-            //   fps: 24
-            // }
+            videoMetadata: {
+              fps: 24
+            }
           },
           {
             text: prompt
@@ -517,15 +518,15 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
                   description: {
                     type: Type.STRING,
                   },
-                  startTimestamp: {
+                  startTimestampMs: {
                     type: Type.NUMBER,
                   },
-                  endTimestamp: {
+                  endTimestampMs: {
                     type: Type.NUMBER,
                   },
                 },
                 required: ["title", "description"],
-                propertyOrdering: ["title", "description", "startTimestamp", "endTimestamp"],
+                propertyOrdering: ["title", "description", "startTimestampMs", "endTimestampMs"],
                 additionalProperties: false,
               }
             }
@@ -551,20 +552,20 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
 
     const processedRecommendations: ProcessedFeedbackRecommendation[] = geminiResponseJSON.recommendations.map((recommendation: GeminiFeedbackRecommendation) => {
       // If Gemini supplied no timestamps, return as-is
-      if(!recommendation.startTimestamp || !recommendation.endTimestamp) {
+      if(!recommendation.startTimestampMs || !recommendation.endTimestampMs) {
         return recommendation;
       }
 
       // Gemini saw videos slowed by `slowFactor`. Convert those timestamps back by dividing by slowFactor.
-      const adjStart = recommendation.startTimestamp / slowFactor;
-      const adjEnd = recommendation.endTimestamp / slowFactor;
+      const adjStart = recommendation.startTimestampMs / slowFactor;
+      const adjEnd = recommendation.endTimestampMs / slowFactor;
 
       const mappedStartTimestamp = getTimestampMapping(dataJSON.startTimestamp + adjStart, dataJSON);
       const mappedEndTimestamp = getTimestampMapping(dataJSON.startTimestamp + adjEnd, dataJSON);
 
       if(!mappedStartTimestamp || !mappedEndTimestamp) {
-        // Return recommendation without startTimestamp and endTimestamp
-        const { startTimestamp, endTimestamp, ...baseRecommendation } = recommendation;
+        // Return recommendation without startTimestampMs and endTimestampMs
+        const { startTimestampMs, endTimestampMs, ...baseRecommendation } = recommendation;
         return baseRecommendation;
       }
 
