@@ -1,18 +1,15 @@
-// app/calibration-page/CalibrationPage.tsx
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import SkeletonViewer from "../skeleton-viewer/skeleton-viewer"; // Adjust path as needed
+import SkeletonViewer from "../skeleton-viewer/skeleton-viewer"; 
 import endpoints, { type LevelData, type TimestampedPoses } from "~/api/endpoints";
 import { SessionScorer} from "../skeleton-viewer/utils";
-// Note: Removed unused imports like useEffect, useParams, endpoints, SessionScorer, LevelData, etc.
-
-/* ------------------------- CONFIG (Example values, not used functionally) ------------------------- */
+import { saveCalibrationMs } from "../utils/calibration";
 
 const FEED_SIZE = 500;
-const EXAMPLE_SCORE_THRESHOLD = 95; // Just for display text
+const EXAMPLE_SCORE_THRESHOLD = 95;
 const CALIBRATION_LEVEL_ID = "6902fa6a5f72ae637347c820";
+const TARGET_MOVE_TIMESTAMPS = [2.0, 6.0, 10.0, 13.0, 16.0, 20.0, 22.0, 25.5, 28.0];
 
-/* ------------------------ PAGE --------------------------- */
 
 export default function CalibrationPage() {
   const nav = useNavigate();
@@ -21,45 +18,58 @@ export default function CalibrationPage() {
   const levelId = objectId || CALIBRATION_LEVEL_ID;
 
   const scorerRef = useRef<SessionScorer | null>(null);
+  const [scorerReady, setScorerReady] = useState(false);   
+  const runStartRef = useRef<number | null>(null);
+  const scoreTimelineRef = useRef<Array<{ videoTs: number; score: number; wallTs: number }>>([]);
 
-  // Simplified state - only what's needed for basic UI interaction/display
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string>(""); 
   const [status, setStatus] = useState<"idle" | "countdown" | "running" | "done">("idle");
 
+  const statusRef = useRef<"idle" | "countdown" | "running" | "done">("idle");
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+  
+  const [showStartOverlay, setShowStartOverlay] = useState(true);
+
   const [countdown, setCountdown] = useState<number | null>(null);
-  const [liveScore, setLiveScore] = useState<number>(0); // Display a dummy score
-  const [resultText, setResultText] = useState<string | null>(null); // Display a placeholder result
+  const [liveScore, setLiveScore] = useState<number>(0); 
+  const [resultText, setResultText] = useState<string | null>(null); 
   
   const [annotatedUrl, setAnnotatedUrl] = useState<string>("");
   const [levelData, setLevelData] = useState<LevelData | null>(null);
+  const [calibrationMs, setCalibrationMs] = useState<number | null>(null);
 
-  // --- Stripped Functional Logic ---
-
-  // Placeholder for pose callback - does nothing
   const onPose = (data: TimestampedPoses) => {
+    if (!scorerRef.current) return;
+    if (statusRef.current !== "running") return;
+
+    if (runStartRef.current) {
+      data.timestamp = Date.now() - runStartRef.current;
+    }
+
     const originalTimestamp = (videoRef.current?.currentTime ?? 0) * 1000;
-    if (scorerRef.current && status === "running") {
-      const score = scorerRef.current.consumePose(data, originalTimestamp);
-      if (typeof score["total"] === "number") {
-        setLiveScore(score["total"]);
-      }
+    const score = scorerRef.current.consumePose(data, originalTimestamp);
+    if (score && typeof score.total === "number") {
+      setLiveScore(score.total);
+      scoreTimelineRef.current.push({ videoTs: originalTimestamp, score: score.total, wallTs: Date.now() });
     }
   };
 
   useEffect(() => {
     (async () => {
       setLoading(true);
-      setMsg(""); // Clear previous errors
+      setMsg("");
       try {
-        // Fetch both the video URL and the level data
+        
         const [videoUrl, lvlData] = await Promise.all([
           endpoints.getAnnotatedVideo(levelId),
-          endpoints.getLevel(levelId), // Fetch level data even if logic is removed
+          endpoints.getLevel(levelId), 
         ]);
         setAnnotatedUrl(videoUrl);
-        setLevelData(lvlData); // Store the level data
-        console.log("Calibration level data loaded:", lvlData); // Optional: log loaded data
+        setLevelData(lvlData);
+        console.log("Calibration level data loaded:", lvlData); 
       } catch (e: any) {
         setMsg(`Failed to load calibration level: ${e?.message ?? String(e)}`);
         setAnnotatedUrl("");
@@ -70,73 +80,110 @@ export default function CalibrationPage() {
     })();
   }, [levelId]);
 
-  // Placeholder for start function
-  const start = async () => {
-    if (!levelData) {
-      setMsg("Level data is not loaded. Cannot start calibration.");
+  const handleVideoReady = () => {
+    if (!levelData || !videoRef.current) {
+      console.warn("Video is ready, but levelData or ref is missing.");
       return;
     }
 
-    console.log("Start Calibration button clicked"); // Updated log
-    setResultText(null); // Clear previous placeholder result
+    const durationMs = (videoRef.current.duration ?? 0) * 1000;
+    if (durationMs === 0) {
+      setMsg("Video loaded but duration is 0. Cannot initialize scorer.");
+      return;
+    }
+    
+    console.log(`Video ready. Initializing scorer with duration: ${durationMs}ms`);
+    scorerRef.current = new SessionScorer(levelData, 500, [[0, durationMs]]);
+    setScorerReady(true);          
+    setStatus(prev =>
+      prev === "idle" || prev === "done" ? "idle" : prev
+    );
+    console.log("Scorer initialized:", scorerRef.current);
+  };
+  const start = () => {
+    if (!videoRef.current) return; 
+    setShowStartOverlay(false);
     setLiveScore(0);
     setStatus("countdown");
 
-    // --- Add this block to reset the video ---
-    if (videoRef.current) {
-      videoRef.current.currentTime = 0; // Rewind video to the start
-      videoRef.current.onended = finish; // Call finish() when video ends
-    }
+    videoRef.current.currentTime = 0;
+    videoRef.current.onended = finish;
 
-    // Simulate countdown
     let count = 3;
     setCountdown(count);
+    
     const interval = setInterval(() => {
       count -= 1;
       setCountdown(count);
       if (count === 0) {
         clearInterval(interval);
         setCountdown(null);
-
-        const durationMs = (videoRef.current?.duration ?? 0) * 1000;
-        if (durationMs === 0) {
-            setMsg("Video duration is unknown. Cannot start scorer.");
-            return;
-        }
-        scorerRef.current = new SessionScorer(levelData, 500, [[0, durationMs]]);
-
-        setStatus("running");
-        console.log("Calibration running (simulated)");
-
-        // --- Add this line to play the video ---
-        videoRef.current?.play();
         
+        runStartRef.current = Date.now();   
+        setStatus("running");
+        if (!videoRef.current) return;
+        videoRef.current.play();
       }
     }, 1000);
   };
 
-  // Placeholder for finish function
   const finish = () => {
-    console.log("Calibration finished (logic removed)");
+    console.log("Calibration finished — computing calibration offsets");
     setStatus("done");
     scorerRef.current = null;
-    // --- Add this block to control video state ---
     if (videoRef.current) {
-      videoRef.current.pause(); // Ensure video is paused
-      videoRef.current.onended = null; // Clear the event handler
+      videoRef.current.pause();
+      videoRef.current.onended = null; 
     }
-    // --- End of new block ---
 
-    // Display a placeholder result message
-    const fakeOffset = Math.round((Math.random() - 0.5) * 500); // Example offset
-    setResultText(`Placeholder Result: Offset: ${fakeOffset} ms`);
-    // Original calculation and saving logic removed
+    // Compute how long after each target timestamp the user's rolling score first exceeded the threshold
+    const timeline = scoreTimelineRef.current.slice(); // copy
+    const targetMs = TARGET_MOVE_TIMESTAMPS.map(s => Math.round(s * 1000));
+
+    const perMoveResults: Array<{ targetMs: number; reachedAtMs: number | null; deltaMs: number | null }>
+      = targetMs.map(t => ({ targetMs: t, reachedAtMs: null, deltaMs: null }));
+
+    // For each move, find the first sample at or after target where score >= threshold
+    for (let i = 0; i < perMoveResults.length; i++) {
+      const t = perMoveResults[i].targetMs;
+      for (let j = 0; j < timeline.length; j++) {
+        const sample = timeline[j];
+        if (sample.videoTs >= t && sample.score >= EXAMPLE_SCORE_THRESHOLD) {
+          perMoveResults[i].reachedAtMs = sample.videoTs;
+          perMoveResults[i].deltaMs = Math.max(0, Math.round(sample.videoTs - t));
+          break;
+        }
+      }
+    }
+
+    // Compute average delta across moves that were reached
+    const reachedDeltas = perMoveResults.map(r => r.deltaMs).filter((d): d is number => d != null);
+    const avgMs = reachedDeltas.length > 0 ? Math.round(reachedDeltas.reduce((a, b) => a + b, 0) / reachedDeltas.length) : null;
+
+    // Format result text with per-move details
+    const perMoveText = perMoveResults
+      .map((r, idx) => {
+        if (r.deltaMs == null) return `Move ${idx + 1}: not reached`;
+        return `Move ${idx + 1}: ${r.deltaMs} ms`;
+      })
+      .join("; ");
+
+    setResultText(`Calibration average: ${avgMs != null ? `${avgMs} ms` : "— no moves reached 95"}. Details: ${perMoveText}`);
+
+    // Save numeric calibration so other pages can read it (persist to localStorage)
+    setCalibrationMs(avgMs);
+    try {
+      saveCalibrationMs(avgMs);
+    } catch (e) {
+      console.warn("Failed to persist calibration:", e);
+    }
+
+    // Reset timeline for next run
+    scoreTimelineRef.current = [];
   };
 
-  // Determine if the start button should be enabled (simplified)
-  const canStart = !!annotatedUrl && (status === "idle" || status === "done");
+  const canStart = scorerReady && (status === "idle" || status === "done");
 
-  // --- UI Rendering ---
 
   return (
     <div style={{ maxWidth: 1000, margin: "0 auto", padding: "2rem 2rem 8rem", color: "#fff" }}>
@@ -146,28 +193,25 @@ export default function CalibrationPage() {
       {loading && <p>Loading…</p>}
       {msg && <p style={{ color: "#ff7676" }}>{msg}</p>}
 
-      {/* Simplified content assuming video/components are always available */}
       <>
         <p>
           Imitate the reference. After each marked move, we measure how long it takes your rolling score to reach{" "}
-          <b>{EXAMPLE_SCORE_THRESHOLD}</b>. The median delay becomes your calibration offset. (Functionality Removed)
+          <b>{EXAMPLE_SCORE_THRESHOLD}</b>. The median delay becomes your calibration offset.
         </p>
 
         <div style={grid2}>
-          {/* Webcam panel with overlay button/countdown - MOVED TO THE LEFT */}
           <div style={{ ...panel, position: "relative", overflow: "hidden" }}>
             <h3 style={h3}>Your Camera</h3>
             <SkeletonViewer
-              reportPoses={onPose} // Uses the dummy onPose
+              reportPoses={onPose} 
               useWebcam={true}
               mediaStream={null}
               width={FEED_SIZE}
               height={FEED_SIZE}
-              badKeypointsProp={[]} // Static empty array
+              badKeypointsProp={[]} 
             />
 
-            {/* Start overlay */}
-            {canStart && (
+            {showStartOverlay && canStart && (
               <div style={overlayShade}>
                 <button onClick={start} style={ctaBtn}>
                   Start Calibration
@@ -175,45 +219,40 @@ export default function CalibrationPage() {
               </div>
             )}
 
-            {/* Countdown overlay */}
             {status === "countdown" && countdown != null && (
               <div style={overlayShade}>
                 <div style={countdownText}>{countdown}</div>
               </div>
             )}
 
-            {/* Running badge */}
             {status === "running" && (
               <div style={runningPill}>Calibrating…</div>
             )}
           </div>
 
-          {/* Reference video panel - MOVED TO THE RIGHT */}
           <div style={panel}>
             <h3 style={h3}>Reference</h3>
-            {/* Display video controls, but source might be empty or a placeholder */}
             <video
               ref={videoRef}
-              src={annotatedUrl || ""} // Use a placeholder or leave empty
+              src={annotatedUrl || ""} 
               controls
               playsInline
               muted
               style={{ width: "100%", maxHeight: 360, background: "#000", borderRadius: 8 }}
+              onCanPlay={handleVideoReady}
             />
             <p style={{ opacity: 0.85, marginTop: 8 }}>
-              Moves: <b>(Example: 9)</b> {/* Static text */}
+              Moves: <b>(Example: 9)</b> 
             </p>
           </div>
         </div>
 
-        {/* Fallback button */}
         <div style={{ display: "flex", gap: 12, marginTop: 12 }}>
           <button onClick={start} disabled={!canStart} style={primary(!canStart)}>
             {status === "running" ? "Calibrating…" : "Start Calibration"}
           </button>
         </div>
 
-        {/* Placeholder Result Display */}
         {resultText && (
           <div style={{ marginTop: 16, padding: 12, border: "1px solid #2a2a2a", borderRadius: 8, background: "#141414" }}>
             <h3 style={{ margin: "0 0 8px 0" }}>Result</h3>
