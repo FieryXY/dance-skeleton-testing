@@ -21,6 +21,7 @@ export default function PoseComparisonPage() {
   const navigate = useNavigate();
   const [annotatedVideoUrl, setAnnotatedVideoUrl] = useState<string | null>(null);
   const scorerRef = useRef<SessionScorer | null>(null);
+  const [calibration, setCalibration] = useCalibration();
   const [windowScore, setWindowScore] = useState<number | null>(null);
   const [badKeypoints, setBadKeypoints] = useState<string[]>([]);
   // Feedback dialog state
@@ -93,6 +94,9 @@ export default function PoseComparisonPage() {
     const originalTimestamp = (videoRef.current?.currentTime ?? 0) * 1000;
     if (scorerRef.current && interactionModeRef.current === "try" && webcamRecordingStartTimestampRef.current && webcamMediaRecorderRef.current) {
       data.timestamp = Date.now() - webcamRecordingStartTimestampRef.current;
+      if(calibration) {
+        data.timestamp -= calibration;
+      }
       const score = scorerRef.current.consumePose(data, originalTimestamp);
       if (typeof score["total"] === "number") {
         setWindowScore(score["total"]);
