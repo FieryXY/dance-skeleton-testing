@@ -573,5 +573,41 @@ export class SessionScorer {
     getTimestampScores() {
         return this.timestamp_scores;
     }
+
+    findOptimalOffset(offset_tolerance: number): number {
+        // Algorithm:
+        // For each pose in the level data, find the pose in the timestamp_scores that is within the offset tolerance (in ms)
+        // and has the highest score.
+        // Once you have the optimal offset for each pose in the level data, return the average offset.
+        let total_offset = 0;
+        let count = 0;
+
+        for (const levelPose of this.levelData.pose_data) {
+            let bestOffset = null;
+            let bestScore = -Infinity;
+
+            for (const scoredPose of this.timestamp_scores) {
+                const offset = levelPose.timestamp - scoredPose.webcamTimestamp;
+                if (Math.abs(offset) <= offset_tolerance) {
+                    const score = scoredPose.scores["total"] || 0;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestOffset = offset;
+                    }
+                }
+            }
+
+            if (bestOffset !== null) {
+                total_offset += bestOffset;
+                count += 1;
+            }
+        }
+
+        if (count === 0) {
+            return 0; // No valid offsets found
+        }
+
+        return total_offset / count;
+    }
         
 }

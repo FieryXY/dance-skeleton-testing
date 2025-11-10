@@ -4,6 +4,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import mongoose from "mongoose";
 import temp from "temp";
 import * as fs from 'fs';
+import { Readable } from "stream";
 export function drawResults(poses, ctx, model) {
     for (const pose of poses) {
         drawKeypoints(pose.keypoints, ctx);
@@ -118,15 +119,33 @@ export function trimVideo(inputPath, outputPath, startTimestamp, endTimestamp) {
             .run();
     });
 }
-export async function prepareFeedbackBase64s(objectId, uploadedFilePath, startTimestamp, endTimestamp, playbackRate) {
+export async function prepareFeedbackBase64s(objectId, uploadedFilePath, startTimestamp, endTimestamp, playbackRate, slowFactor = 1) {
     if (!mongoose.connection.db) {
         throw new Error("Error connecting with database");
     }
     // Convert the uploaded video to mp4
     const tempUploadedPath = temp.path({ suffix: '.mp4' });
     await convertToMp4(uploadedFilePath, tempUploadedPath);
-    // Get the base64 encoding for the uploaded video
-    const uploadedVideoBase64 = fs.readFileSync(tempUploadedPath, { encoding: 'base64' });
+    // If we need to adjust playback (including an extra slowFactor), create an adjusted uploaded file
+    let finalUploadedPath = tempUploadedPath;
+    const safePlaybackRate = (playbackRate && playbackRate > 0) ? playbackRate : 1;
+    const appliedSetpts = slowFactor * (1 / safePlaybackRate);
+    if (appliedSetpts !== 1) {
+        const tempUploadedPlaybackAdjusted = temp.path({ suffix: '.mp4' });
+        await new Promise((resolve, reject) => {
+            ffmpeg(tempUploadedPath)
+                .videoFilters(`setpts=${appliedSetpts}*PTS`)
+                // drop audio to avoid extremely slow audio artifacts
+                .noAudio()
+                .output(tempUploadedPlaybackAdjusted)
+                .on('end', () => resolve())
+                .on('error', (err) => reject(err))
+                .run();
+        });
+        finalUploadedPath = tempUploadedPlaybackAdjusted;
+    }
+    // Get the base64 encoding for the uploaded video (possibly playback-adjusted)
+    const uploadedVideoBase64 = fs.readFileSync(finalUploadedPath, { encoding: 'base64' });
     const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db);
     // Extract only the portion of the video from beginningTimestamp to endTimestamp (in ms)
     const originalVideoBuffer = await new Promise((resolve, reject) => {
@@ -138,25 +157,94 @@ export async function prepareFeedbackBase64s(objectId, uploadedFilePath, startTi
     });
     // Write buffer to a temp file
     const tempInput = temp.path({ suffix: '.mp4' });
-    const tempInputPlaybackAdjusted = temp.path({ suffix: '.mp4' });
+    const tempInputTrimmed = temp.path({ suffix: '.mp4' });
     const tempOutput = temp.path({ suffix: '.mp4' });
     fs.writeFileSync(tempInput, originalVideoBuffer);
-    // Change the playback rate of the original video in the temp mp4 file
-    console.log(`Adjusting playback rate to ${playbackRate}x for video at ${tempInput}`);
+    // Get the part of the video from startTimestamp to endTimestamp
+    await trimVideo(tempInput, tempInputTrimmed, startTimestamp, endTimestamp);
+    // Change the playback rate of the original video in the temp mp4 file.
+    // We apply both the requested playbackRate and the extra slowFactor so callers can ask for
+    // a combined adjustment (e.g. slowFactor=100 to slow 100x before sending to Gemini).
+    const safePlaybackRate2 = (playbackRate && playbackRate > 0) ? playbackRate : 1;
+    const appliedSetptsOriginal = slowFactor * (1 / safePlaybackRate2);
+    console.log(`Adjusting playback rate (setpts=${appliedSetptsOriginal}) for video at ${tempInput}`);
     await new Promise((resolve, reject) => {
-        ffmpeg(tempInput)
-            .videoFilters(`setpts=${1 / playbackRate}*PTS`)
-            .output(tempInputPlaybackAdjusted)
+        ffmpeg(tempInputTrimmed)
+            .videoFilters(`setpts=${appliedSetptsOriginal}*PTS`)
+            // drop audio to avoid extremely slow audio artifacts
+            .noAudio()
+            .output(tempOutput)
             .on('end', () => resolve())
             .on('error', (err) => reject(err))
             .run();
     });
-    // Get the part of the video from startTimestamp to endTimestamp
-    await trimVideo(tempInputPlaybackAdjusted, tempOutput, startTimestamp, endTimestamp);
     // Read the trimmed video and encode to base64
-    const trimmedVideoBuffer = fs.readFileSync(tempOutput);
-    const originalVideoBase64 = trimmedVideoBuffer.toString('base64');
+    const finalOriginalVideoBuffer = fs.readFileSync(tempOutput);
+    const originalVideoBase64 = finalOriginalVideoBuffer.toString('base64');
     // Clean up temp files
     temp.cleanupSync();
     return { originalVideoBase64, uploadedVideoBase64 };
+}
+/**
+ *
+ * @param videoBase641 Base 64 encoded video 1
+ * @param videoBase642 Base 64 encoded video 2
+ * @param offset Time offset in seconds to apply (video 2 will start playing offset seconds before video 1)
+ * @returns Base 64 encoded stitched video
+ */
+export async function stitchVideosSideBySide(videoBase641, videoBase642, offset) {
+    // Create a temporary file for the stitched video
+    const tempOutput = temp.path({ suffix: '.mp4' });
+    // Create temporary files for the input videos
+    const tempInput1 = temp.path({ suffix: '.mp4' });
+    const tempInput2 = temp.path({ suffix: '.mp4' });
+    fs.writeFileSync(tempInput1, Buffer.from(videoBase641, 'base64'));
+    fs.writeFileSync(tempInput2, Buffer.from(videoBase642, 'base64'));
+    // For debugging, write the input temp files to video_1.mp4 and video_2.mp4
+    fs.writeFileSync('video_1.mp4', Buffer.from(videoBase641, 'base64'));
+    fs.writeFileSync('video_2.mp4', Buffer.from(videoBase642, 'base64'));
+    await new Promise((resolve, reject) => {
+        ffmpeg()
+            .input(tempInput1)
+            // .inputOptions([`-itsoffset ${offset}`])
+            .input(tempInput2)
+            .outputOptions([
+            // 1) scale both to same height/shape
+            '-filter_complex',
+            '[0:v]scale=-2:1080,setsar=1[v0];' +
+                '[1:v]scale=-2:1080,setsar=1[v1];' +
+                '[v0][v1]hstack=inputs=2[v]',
+            // 2) use stacked video
+            '-map', '[v]',
+            // 3) keep audio from first video if it exists
+            '-map', '0:a?',
+            // 4) normal mp4 encoders
+            '-c:v', 'libx264',
+            '-c:a', 'aac',
+            // '-pix_fmt', 'yuv420p'
+            // (no -shortest, per your request)
+        ])
+            .format('mp4')
+            .output(tempOutput)
+            .on('end', () => resolve())
+            .on('error', (err) => reject(err))
+            .on('stderr', (line) => {
+            console.log('ffmpeg:', line);
+        })
+            .run();
+    });
+    // Read the stitched video and encode to base64
+    const stitchedVideoBuffer = fs.readFileSync(tempOutput);
+    const stitchedVideoBase64 = stitchedVideoBuffer.toString('base64');
+    // TEMP: Write the mp4 to stitched_video_base64.mp4 for debugging
+    fs.writeFileSync('stitched_video_base64.mp4', stitchedVideoBuffer);
+    // Clean up temp files
+    temp.cleanupSync();
+    return stitchedVideoBase64;
+}
+function bufferToStream(buffer) {
+    const stream = new Readable();
+    stream.push(buffer);
+    stream.push(null); // end of stream
+    return stream;
 }

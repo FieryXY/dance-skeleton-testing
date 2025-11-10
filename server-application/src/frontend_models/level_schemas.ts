@@ -32,8 +32,8 @@ interface GeminiMiniFeedbackResponse {
 interface GeminiFeedbackRecommendation {
     title: string;
     description: string;
-    startTimestamp?: number;
-    endTimestamp?: number;
+    startTimestampMs?: number;
+    endTimestampMs?: number;
 }
 
 interface ProcessedFeedbackRecommendation {
@@ -131,8 +131,8 @@ const GeminiFeedbackResponseSchema: JSONSchemaType<GeminiFeedbackResponse> = {
                 properties: {
                     title: { type: "string" },
                     description: { type: "string" },
-                    startTimestamp: { type: "number", nullable: true },
-                    endTimestamp: { type: "number", nullable: true },
+                    startTimestampMs: { type: "number", nullable: true },
+                    endTimestampMs: { type: "number", nullable: true },
                 },
                 required: ["title", "description"],
                 additionalProperties: false,

@@ -243,6 +243,9 @@ export default function PoseComparisonPage() {
           let prevVideo = previousMiniAttemptFile;
 
           if(prevVideo == null && lastBigAttemptFile) {
+            // Extend range by 1 second on either side
+            miniRecommendation.mappedStartTimestamp! -= 1000;
+            miniRecommendation.mappedEndTimestamp! += 1000;
             prevVideo = await endpoints.trimVideo(lastBigAttemptFile, miniRecommendation.mappedStartTimestamp!, miniRecommendation.mappedEndTimestamp!);
           }
 
@@ -513,6 +516,21 @@ export default function PoseComparisonPage() {
     setActiveIntervalIndex(null);
     setControlMode('intervalSelect');
   };
+
+  const handleWatchLastAttemptEntireVideo = async () => {
+    if(!lastBigAttemptFile) return;
+    try {
+      setLoading(true);
+      const videoUrl = URL.createObjectURL(lastBigAttemptFile);
+      setLastAttemptModalVideoUrl(videoUrl);
+      setShowLastAttemptModal(true);
+    } catch (err) {
+      console.error("Failed to watch last attempt entire video:", err);
+      alert("Failed to load last attempt video.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   const handleWatchLastAttempt = async () => {
     if (!miniRecommendation || !lastBigAttemptFile) return;
@@ -848,6 +866,15 @@ export default function PoseComparisonPage() {
                 <button onClick={previewCurrent} style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#6c757d', color: '#fff' }}>Preview</button>
                 <button onClick={loopCurrent} style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#ffc107', color: '#000' }}>Loop</button>
                 <button onClick={tryCurrent} style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#28a745', color: '#fff' }}>Try It</button>
+                {/* Show a button to replay the full last big attempt when available */}
+                {lastBigAttemptFile && !miniMode && (
+                  <button
+                    onClick={handleWatchLastAttemptEntireVideo}
+                    style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#6f42c1', color: '#fff' }}
+                  >
+                    Watch Last Attempt
+                  </button>
+                )}
                 {showRecAgainVisible && (
                   <button onClick={openRecommendations} style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#17a2b8', color: '#fff' }}>Show Recommendations Again</button>
                 )}
