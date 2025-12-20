@@ -123,7 +123,7 @@ export default function PoseComparisonPage() {
     if (!objectId) return;
     try {
       const [videoUrl, level] = await Promise.all([
-        endpoints.getAnnotatedVideo(objectId),
+        endpoints.getOriginalVideo(objectId),
         endpoints.getLevel(objectId),
       ]);
       setAnnotatedVideoUrl(videoUrl);
@@ -243,9 +243,9 @@ export default function PoseComparisonPage() {
           let prevVideo = previousMiniAttemptFile;
 
           if(prevVideo == null && lastBigAttemptFile) {
-            // Extend range by 1 second on either side
-            miniRecommendation.mappedStartTimestamp! -= 1000;
-            miniRecommendation.mappedEndTimestamp! += 1000;
+            // Extend range by 2 seconds on either side
+            miniRecommendation.mappedStartTimestamp! -= 2000;
+            miniRecommendation.mappedEndTimestamp! += 2000;
             prevVideo = await endpoints.trimVideo(lastBigAttemptFile, miniRecommendation.mappedStartTimestamp!, miniRecommendation.mappedEndTimestamp!);
           }
 

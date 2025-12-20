@@ -24,6 +24,9 @@ dotenv.config();
 const MODEL = poseDetection.SupportedModels.BlazePose;
 const MODEL_TYPE = poseDetection.movenet.modelType.SINGLEPOSE_THUNDER;
 
+// Number of frames between new pose detection during level creation
+const POSE_DETECTION_SAMPLE_RATE = 3;
+
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
@@ -89,6 +92,11 @@ router.post('/create', upload.single('video'), async (req, res) => {
     const poses: TimestampedPose[] = [];
 
     for (let i = 0; i < frameFiles.length; i++) {
+
+      if (i % POSE_DETECTION_SAMPLE_RATE !== 0) {
+        continue;
+      }
+
       const framePath = path.join(framesDir, frameFiles[i]);
       const image = await loadImage(framePath);
       const canvas = createCanvas(image.width, image.height);
@@ -229,7 +237,7 @@ router.put('/:id/intervals', async (req, res) => {
 
     res.json(level);
   } catch (err) {
-    res.status(500).send('Server error');
+    res.status(500).send(err);
   }
 });
 
@@ -387,6 +395,39 @@ router.post('/getMiniFeedback/:id', upload.fields([
 
 });
 
+// Delete level by ID
+router.delete('/:id', validateID(), async (req, res) => {
+  try {
+    const level = await Level.findByIdAndDelete(req.params.id);
+    if (!level) {
+      res.status(404).send('Level not found');
+      return;
+    }
+
+    if(!mongoose.connection.db) {
+      res.status(500).send("Error connecting with database to delete video files");
+      return;
+    }
+    const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db);
+
+    // Delete original video
+    const originalFiles = await bucket.find({ filename: "ORIGINAL_" + req.params.id }).toArray();
+    for (const file of originalFiles) {
+      await bucket.delete(file._id);
+    }
+
+    // Delete annotated video
+    const annotatedFiles = await bucket.find({ filename: "ANNOTATED_" + req.params.id }).toArray();
+    for (const file of annotatedFiles) {
+      await bucket.delete(file._id);
+    }
+
+    res.send('Level and associated videos deleted successfully');
+  } catch (err) {
+    res.status(500).send('Server error');
+  }
+});
+
 router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
   if (!req.file) {
     res.status(400).send('No video file uploaded for level');
@@ -436,9 +477,9 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
     const scoreData = dataJSON.scoreData;
 
   // Slow videos by 100x before sending to Gemini so Gemini sees slow-motion: pass slowFactor=5
-  const slowFactor = 5;
+  const slowFactor = 1.5;
   const {originalVideoBase64, uploadedVideoBase64} = await prepareFeedbackBase64s(req.params.id, inputPath, dataJSON.startTimestamp, dataJSON.endTimestamp, dataJSON.playbackRate, slowFactor);
-  const stitchedVideoBase64 = await stitchVideosSideBySide(originalVideoBase64, uploadedVideoBase64, 0);
+  // const stitchedVideoBase64 = await stitchVideosSideBySide(originalVideoBase64, uploadedVideoBase64, 0);
 
     let prompt = Constants.MAIN_FEEDBACK_PROMPT.replace('{{START_TIMESTAMP_MS}}', dataJSON.startTimestamp.toString()) + "\n\n" + JSON.stringify(scoreData);
 
@@ -604,6 +645,16 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
   }
 });
 
+router.post('/search/:query', async (req, res) => {
+	// Get all levels whose title contains the query string (case-insensitive)
+	try {
+		const query = req.params.query;
+		const levels = await Level.find({ title: { $regex: query, $options: 'i' } }).limit(20);
+		res.json(levels);
+	} catch (err) {
+		res.status(500).send('Server error');
+	}
+})
 
 
 export { router as LevelController };
