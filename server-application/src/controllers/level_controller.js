@@ -141,6 +141,22 @@ router.post('/create', upload.single('video'), async (req, res) => {
         res.status(500).send('Failed to process video');
     }
 });
+
+router.get('/', async (_req, res) => {
+    try {
+        const levels = await Level.find({}, { title: 1 })
+            .sort({ _id: -1 })
+            .lean();
+
+        res.json(levels.map(level => ({
+            id: level._id.toString(),
+            title: level.title,
+        })));
+    }
+    catch (err) {
+        res.status(500).send('Server error');
+    }
+});
 router.get('/:id', validateID(), async (req, res) => {
     try {
         const level = await Level.findById(req.params.id);

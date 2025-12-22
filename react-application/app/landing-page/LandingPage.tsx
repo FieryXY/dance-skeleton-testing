@@ -1,17 +1,8 @@
-import React, { useState } from "react";
+import React from "react";
 import { useNavigate } from "react-router";
 
 export default function LandingPage() {
-  const [levelCode, setLevelCode] = useState("");
   const navigate = useNavigate();
-
-  const handlePlay = () => {
-    if (levelCode.trim()) {
-      navigate(`/play/${levelCode}`);
-    } else {
-      alert("Please enter a valid level code.");
-    }
-  };
 
   return (
     <div style={{
@@ -34,26 +25,6 @@ export default function LandingPage() {
         Dance AI
       </h1>
 
-      {/* Level Code Input */}
-      <input
-        type="text"
-        placeholder="Enter Level Code"
-        value={levelCode}
-        onChange={(e) => setLevelCode(e.target.value)}
-        style={{
-          width: "100%",
-          maxWidth: "400px",
-          padding: "1rem",
-          fontSize: "1.5rem",
-          borderRadius: "8px",
-          border: "1px solid #ced4da",
-          marginBottom: "1.5rem",
-          textAlign: "center",
-          backgroundColor: "#fff", // White background for the text box
-          color: "#000", // Black text for visibility
-        }}
-      />
-
       {/* Buttons */}
       <div style={{
         display: "flex",
@@ -62,7 +33,7 @@ export default function LandingPage() {
         justifyContent: "center",
       }}>
         <button
-          onClick={handlePlay}
+          onClick={() => navigate("/levels")}
           style={{
             padding: "0.75rem 1.5rem",
             fontSize: "1.25rem",
@@ -73,7 +44,7 @@ export default function LandingPage() {
             cursor: "pointer",
           }}
         >
-          Play
+          Levels
         </button>
         <button
           onClick={() => navigate("/level-creation")}

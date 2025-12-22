@@ -1,6 +1,9 @@
-import * as poseDetection from '@tensorflow-models/pose-detection';
+    import * as poseDetection from '@tensorflow-models/pose-detection';
 import type { ScoredPose } from '~/skeleton-viewer/utils';
-const BackendURL = import.meta.env.REACT_APP_BACKEND_URL;
+const BackendURL =
+    import.meta.env.VITE_BACKEND_URL ??
+    import.meta.env.REACT_APP_BACKEND_URL ??
+    "http://localhost:5001";
 
 export interface LevelData {
     title: string;
@@ -17,6 +20,11 @@ export interface LevelCreationData {
     title: string,
     intervals: number[][],
     interval_notes?: string[],
+}
+
+export interface LevelListItem {
+    id: string;
+    title: string;
 }
 
 export interface ProcessedFeedbackRecommendation {
@@ -40,6 +48,32 @@ export interface MiniFeedbackResponse {
 }
 
 class Endpoints {
+    listLevels = (): Promise<LevelListItem[]> => {
+        return fetch(`${BackendURL}/levels`)
+            .then(async response => {
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`Network response was not ok: ${errorText}`);
+                }
+
+                const contentType = response.headers.get("content-type") ?? "";
+                if (!contentType.includes("application/json")) {
+                    const text = await response.text();
+                    throw new Error(
+                        `Expected JSON from ${BackendURL}/levels but got '${contentType}'. ` +
+                        `This usually means the backend URL is misconfigured (set VITE_BACKEND_URL). ` +
+                        `Response started with: ${JSON.stringify(text.slice(0, 60))}`
+                    );
+                }
+
+                return (await response.json()) as LevelListItem[];
+            })
+            .catch(error => {
+                console.error("Error listing levels:", error);
+                throw error;
+            });
+    }
+
     getLevel = (objectId: string): Promise<LevelData> => {
         return fetch(`${BackendURL}/levels/${objectId}`)
             .then(response => response.json())
