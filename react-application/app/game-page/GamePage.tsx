@@ -1,13 +1,14 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import type { RefObject } from "react";
 import SkeletonViewer from "../skeleton-viewer/skeleton-viewer"; // Adjust path as needed
 import VideoPlayer from "../video-player/VideoPlayer";
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import type { LevelData, TimestampedPoses, FeedbackResponse, MiniFeedbackResponse, ProcessedFeedbackRecommendation } from "~/api/endpoints";
 import endpoints from "~/api/endpoints";
-import { angles_to_consider, SessionScorer } from "../skeleton-viewer/utils";
+import { angles_to_consider, getPoseFromTimestamp, SessionScorer } from "../skeleton-viewer/utils";
 import { useNavigate, useParams } from 'react-router';
 import { loadCalibrationMs, useCalibration } from '../utils/calibration';
+import PoseFixer from "./PoseFixer";
 
 const FEED_SIZE = 500; // Square size in pixels
 const BAD_KEYPOINT_THRESHOLD = 40;
@@ -21,7 +22,7 @@ export default function PoseComparisonPage() {
   const navigate = useNavigate();
   const [annotatedVideoUrl, setAnnotatedVideoUrl] = useState<string | null>(null);
   const scorerRef = useRef<SessionScorer | null>(null);
-  const [calibration, setCalibration] = useCalibration();
+  const offset: number = 0;
   const [windowScore, setWindowScore] = useState<number | null>(null);
   const [badKeypoints, setBadKeypoints] = useState<string[]>([]);
   // Feedback dialog state
@@ -71,6 +72,10 @@ export default function PoseComparisonPage() {
   const [showAnnotatedVideo, setShowAnnotatedVideo] = useState(true);
   const [showLastAttemptModal, setShowLastAttemptModal] = useState<boolean>(false);
   const [lastAttemptModalVideoUrl, setLastAttemptModalVideoUrl] = useState<string | null>(null);
+	const [currentAlignedPose, setCurrentAlignedPose] = useState<poseDetection.Pose | null>(null);
+	
+  const [overlayType, setOverlayType] = useState<"live" | "pose_fixer">("live");
+  const [poseFixerStarting, setPoseFixerStarting] = useState<boolean>(false);
 
   // Fetch when objectId (levelCode) is present
   useEffect(() => {
@@ -93,10 +98,7 @@ export default function PoseComparisonPage() {
   const handleWebcamPose = (data: TimestampedPoses) => {
     const originalTimestamp = (videoRef.current?.currentTime ?? 0) * 1000;
     if (scorerRef.current && interactionModeRef.current === "try" && webcamRecordingStartTimestampRef.current && webcamMediaRecorderRef.current) {
-      data.timestamp = Date.now() - webcamRecordingStartTimestampRef.current;
-      if(calibration) {
-        data.timestamp -= calibration;
-      }
+      data.timestamp = Date.now() - webcamRecordingStartTimestampRef.current + offset;
       const score = scorerRef.current.consumePose(data, originalTimestamp);
       if (typeof score["total"] === "number") {
         setWindowScore(score["total"]);
@@ -118,15 +120,26 @@ export default function PoseComparisonPage() {
     }
   };
 
+	const getCurrentReferencePose = useCallback(() : poseDetection.Pose | null => {
+		if(!levelData || !videoRef.current) return null;
+
+		const currentTimestamp = videoRef.current.currentTime * 1000;
+
+		const timestamped_pose = getPoseFromTimestamp(levelData.pose_data, currentTimestamp);
+
+		return (timestamped_pose && timestamped_pose.poses.length > 0) ? timestamped_pose.poses[0] : null;
+	}, [levelData, videoRef]);
+
   // Fetch level data and associated annotated video
   const handleFetch = async () => {
     if (!objectId) return;
     try {
       const [videoUrl, level] = await Promise.all([
-        endpoints.getOriginalVideo(objectId),
+        endpoints.getAnnotatedVideo(objectId),
         endpoints.getLevel(objectId),
       ]);
       setAnnotatedVideoUrl(videoUrl);
+			console.log("Fetched level data:", level);
       setLevelData(level);
       scorerRef.current = null;
     } catch (err) {
@@ -243,9 +256,9 @@ export default function PoseComparisonPage() {
           let prevVideo = previousMiniAttemptFile;
 
           if(prevVideo == null && lastBigAttemptFile) {
-            // Extend range by 2 seconds on either side
-            miniRecommendation.mappedStartTimestamp! -= 2000;
-            miniRecommendation.mappedEndTimestamp! += 2000;
+            // Extend range by 1 second on either side
+            miniRecommendation.mappedStartTimestamp! -= 1000;
+            miniRecommendation.mappedEndTimestamp! += 1000;
             prevVideo = await endpoints.trimVideo(lastBigAttemptFile, miniRecommendation.mappedStartTimestamp!, miniRecommendation.mappedEndTimestamp!);
           }
 
@@ -390,6 +403,15 @@ export default function PoseComparisonPage() {
   useEffect(() => {
     if (countdown === null) return;
     if (countdown === 0) {
+      // If the countdown was started to enter pose-fixer mode, handle that transition
+      if (poseFixerStarting) {
+        setCurrentAlignedPose(null);
+        setOverlayType('pose_fixer');
+        setPoseFixerStarting(false);
+        setCountdown(null);
+        return;
+      }
+
       // Countdown finished – start segment playback
       if (activeIntervalIndex !== null) {
         startVideoSegment(activeIntervalIndex);
@@ -643,17 +665,50 @@ export default function PoseComparisonPage() {
             <div>
               <h2 style={{ marginBottom: "1rem", textAlign: "center" as const }}>Webcam</h2>
               <div style={feedContainerStyle}>
+							{
+								levelData && videoRef.current &&
                 <SkeletonViewer
                   reportPoses={handleWebcamPose}
+									overlay_type={overlayType}
+									getReferencePose={getCurrentReferencePose}
                   useWebcam={true}
                   mediaStream={null}
                   width={FEED_SIZE}
                   height={FEED_SIZE}
                   badKeypointsProp={badKeypoints}
+									cachedAlignedReferencePose={currentAlignedPose}
+									setCachedAlignedReferencePose={setCurrentAlignedPose}
                 />
+							}
               </div>
             </div>
           )}
+          {/* Fix Picture / Exit controls for PoseFixer flow */}
+          <div style={{ position: 'absolute', bottom: 10, left: 10, zIndex: 3 }}>
+            {overlayType !== 'pose_fixer' ? (
+              <button
+                onClick={() => {
+                  // Start countdown from 5 to enter pose-fixer mode
+                  setCountdown(5);
+                  setPoseFixerStarting(true);
+                }}
+                disabled={!videoRef.current || !videoRef.current.paused}
+                style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#007bff', color: '#fff' }}
+              >
+                Fix Picture
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  // Exit pose-fixer mode
+                  setOverlayType('live');
+                }}
+                style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#6c757d', color: '#fff' }}
+              >
+                Exit
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Annotated Video Section */}
@@ -687,6 +742,7 @@ export default function PoseComparisonPage() {
                       playbackRate={playbackRate}
                       onPlaybackRateChange={handlePlaybackRateChange}
                       freezePlaybackRate={interactionMode === 'try'}
+                      showControls={overlayType !== 'pose_fixer'}
                     />
                     {/* Countdown Overlay */}
                     {countdown !== null && (
@@ -875,6 +931,7 @@ export default function PoseComparisonPage() {
                     Watch Last Attempt
                   </button>
                 )}
+
                 {showRecAgainVisible && (
                   <button onClick={openRecommendations} style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#17a2b8', color: '#fff' }}>Show Recommendations Again</button>
                 )}

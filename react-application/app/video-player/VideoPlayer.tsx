@@ -7,6 +7,7 @@ interface VideoPlayerProps {
   playbackRate: number;
   onPlaybackRateChange?: (rate: number) => void;
   freezePlaybackRate?: boolean;
+  showControls?: boolean;
 }
 
 const formatTime = (seconds: number) => {
@@ -16,7 +17,7 @@ const formatTime = (seconds: number) => {
   return `${m}:${s}:${ms}`;
 };
 
-const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, videoRef, style, playbackRate, onPlaybackRateChange, freezePlaybackRate = false }) => {
+const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, videoRef, style, playbackRate, onPlaybackRateChange, freezePlaybackRate = false, showControls = true }) => {
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -95,23 +96,26 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, videoRef, style, playbac
         }}
         controls={false}
       />
-      <button
-        onClick={() => setMirrored(m => !m)}
-        style={{
-          position: 'absolute',
-          top: 10,
-          right: 10,
-          padding: '6px 12px',
-          borderRadius: '4px',
-          border: 'none',
-          backgroundColor: '#6c757d',
-          color: '#fff',
-          zIndex: 2,
-        }}
-      >
-        Toggle Mirror
-      </button>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+      {showControls && (
+        <>
+          <button
+            onClick={() => setMirrored(m => !m)}
+            style={{
+              position: 'absolute',
+              top: 10,
+              right: 10,
+              padding: '6px 12px',
+              borderRadius: '4px',
+              border: 'none',
+              backgroundColor: '#6c757d',
+              color: '#fff',
+              zIndex: 2,
+            }}
+          >
+            Toggle Mirror
+          </button>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
         <button
           onClick={togglePlay}
           style={{
@@ -152,8 +156,9 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, videoRef, style, playbac
           onChange={handleSeek}
           style={{ flex: 1 }}
         />
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, opacity: freezePlaybackRate ? 0.5 : 1 }}>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, opacity: freezePlaybackRate ? 0.5 : 1 }}>
         <label htmlFor="speed-slider">Speed:</label>
         <input
           id="speed-slider"
@@ -167,7 +172,9 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, videoRef, style, playbac
           disabled={freezePlaybackRate}
         />
         <span>{playbackRate.toFixed(2)}x</span>
-      </div>
+          </div>
+        </>
+      )}
     </div>
   );
 };
