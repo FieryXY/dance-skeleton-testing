@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import type { RefObject } from "react";
 import SkeletonViewer from "../skeleton-viewer/skeleton-viewer"; // Adjust path as needed
 import VideoPlayer from "../video-player/VideoPlayer";
@@ -7,7 +7,10 @@ import type { LevelData, TimestampedPoses, FeedbackResponse, MiniFeedbackRespons
 import endpoints from "~/api/endpoints";
 import { angles_to_consider, SessionScorer } from "../skeleton-viewer/utils";
 import { useNavigate, useParams } from 'react-router';
+import FeedbackModal from "./modals/FeedbackModal";
 import { loadCalibrationMs, useCalibration } from '../utils/calibration';
+import MiniFeedbackModal from "./modals/MiniFeedbackModal";
+import LastAttemptModal from "./modals/LastAttemptModal";
 
 const FEED_SIZE = 500; // Square size in pixels
 const BAD_KEYPOINT_THRESHOLD = 40;
@@ -21,7 +24,7 @@ export default function PoseComparisonPage() {
   const navigate = useNavigate();
   const [annotatedVideoUrl, setAnnotatedVideoUrl] = useState<string | null>(null);
   const scorerRef = useRef<SessionScorer | null>(null);
-  const [calibration, setCalibration] = useCalibration();
+  const offset: number = 0;
   const [windowScore, setWindowScore] = useState<number | null>(null);
   const [badKeypoints, setBadKeypoints] = useState<string[]>([]);
   // Feedback dialog state
@@ -71,6 +74,10 @@ export default function PoseComparisonPage() {
   const [showAnnotatedVideo, setShowAnnotatedVideo] = useState(true);
   const [showLastAttemptModal, setShowLastAttemptModal] = useState<boolean>(false);
   const [lastAttemptModalVideoUrl, setLastAttemptModalVideoUrl] = useState<string | null>(null);
+	const [currentAlignedPose, setCurrentAlignedPose] = useState<poseDetection.Pose | null>(null);
+	
+  const [overlayType, setOverlayType] = useState<"live" | "pose_fixer">("live");
+  const [poseFixerStarting, setPoseFixerStarting] = useState<boolean>(false);
 
   // Fetch when objectId (levelCode) is present
   useEffect(() => {
@@ -93,10 +100,7 @@ export default function PoseComparisonPage() {
   const handleWebcamPose = (data: TimestampedPoses) => {
     const originalTimestamp = (videoRef.current?.currentTime ?? 0) * 1000;
     if (scorerRef.current && interactionModeRef.current === "try" && webcamRecordingStartTimestampRef.current && webcamMediaRecorderRef.current) {
-      data.timestamp = Date.now() - webcamRecordingStartTimestampRef.current;
-      if(calibration) {
-        data.timestamp -= calibration;
-      }
+      data.timestamp = Date.now() - webcamRecordingStartTimestampRef.current + offset;
       const score = scorerRef.current.consumePose(data, originalTimestamp);
       if (typeof score["total"] === "number") {
         setWindowScore(score["total"]);
@@ -123,10 +127,11 @@ export default function PoseComparisonPage() {
     if (!objectId) return;
     try {
       const [videoUrl, level] = await Promise.all([
-        endpoints.getOriginalVideo(objectId),
+        endpoints.getAnnotatedVideo(objectId),
         endpoints.getLevel(objectId),
       ]);
       setAnnotatedVideoUrl(videoUrl);
+			console.log("Fetched level data:", level);
       setLevelData(level);
       scorerRef.current = null;
     } catch (err) {
@@ -243,9 +248,9 @@ export default function PoseComparisonPage() {
           let prevVideo = previousMiniAttemptFile;
 
           if(prevVideo == null && lastBigAttemptFile) {
-            // Extend range by 2 seconds on either side
-            miniRecommendation.mappedStartTimestamp! -= 2000;
-            miniRecommendation.mappedEndTimestamp! += 2000;
+            // Extend range by 1 second on either side
+            miniRecommendation.mappedStartTimestamp! -= 1000;
+            miniRecommendation.mappedEndTimestamp! += 1000;
             prevVideo = await endpoints.trimVideo(lastBigAttemptFile, miniRecommendation.mappedStartTimestamp!, miniRecommendation.mappedEndTimestamp!);
           }
 
@@ -390,6 +395,15 @@ export default function PoseComparisonPage() {
   useEffect(() => {
     if (countdown === null) return;
     if (countdown === 0) {
+      // If the countdown was started to enter pose-fixer mode, handle that transition
+      if (poseFixerStarting) {
+        setCurrentAlignedPose(null);
+        setOverlayType('pose_fixer');
+        setPoseFixerStarting(false);
+        setCountdown(null);
+        return;
+      }
+
       // Countdown finished – start segment playback
       if (activeIntervalIndex !== null) {
         startVideoSegment(activeIntervalIndex);
@@ -595,6 +609,40 @@ export default function PoseComparisonPage() {
         }
     }
   };
+
+	const onRecommendationSelect = (rec: ProcessedFeedbackRecommendation) => {
+
+		if(controlMode === "practice") {
+			// Save current big-interval context before switching
+			setBigContext({
+				activeIntervalIndex,
+				customStart,
+				customEnd,
+				afterInterval,
+			});
+		}
+
+		setShowFeedbackModal(false);
+		setFeedbackModalType(null);
+		setMiniMode(true);
+		setMiniRecommendation(rec);
+		setCustomStart(rec.startTimestamp!);
+		setCustomEnd(rec.endTimestamp!);
+		setAfterInterval(true);
+		setActiveIntervalIndex(null);
+		setControlMode('recommendation');
+	};
+
+	const onFeedbackModalClose = () => {
+		setShowFeedbackModal(false);
+		setFeedbackModalType(null);
+	};
+
+	const onLastAttemptModalClose = () => {
+		setShowLastAttemptModal(false);
+		setLastAttemptModalVideoUrl(null);
+	};
+
   return (
     <div style={{ padding: "2rem", paddingBottom: "260px" }}>
       {/* Back Button */}
@@ -643,6 +691,8 @@ export default function PoseComparisonPage() {
             <div>
               <h2 style={{ marginBottom: "1rem", textAlign: "center" as const }}>Webcam</h2>
               <div style={feedContainerStyle}>
+							{
+								levelData && videoRef.current &&
                 <SkeletonViewer
                   reportPoses={handleWebcamPose}
                   useWebcam={true}
@@ -651,6 +701,7 @@ export default function PoseComparisonPage() {
                   height={FEED_SIZE}
                   badKeypointsProp={badKeypoints}
                 />
+							}
               </div>
             </div>
           )}
@@ -687,6 +738,7 @@ export default function PoseComparisonPage() {
                       playbackRate={playbackRate}
                       onPlaybackRateChange={handlePlaybackRateChange}
                       freezePlaybackRate={interactionMode === 'try'}
+                      showControls={overlayType !== 'pose_fixer'}
                     />
                     {/* Countdown Overlay */}
                     {countdown !== null && (
@@ -875,6 +927,7 @@ export default function PoseComparisonPage() {
                     Watch Last Attempt
                   </button>
                 )}
+
                 {showRecAgainVisible && (
                   <button onClick={openRecommendations} style={{ padding: '10px 16px', borderRadius: 8, border: 'none', background: '#17a2b8', color: '#fff' }}>Show Recommendations Again</button>
                 )}
@@ -938,200 +991,27 @@ export default function PoseComparisonPage() {
 
       {/* Feedback Modal */}
       {showFeedbackModal && feedbackModalType === 'big' && feedbackData && (
-        <div style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          width: "100%",
-          height: "100%",
-          backgroundColor: "rgba(0,0,0,0.5)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 1000,
-        }}>
-          <div style={{
-            backgroundColor: "#000",
-            color: "#fff",
-            padding: "2rem",
-            borderRadius: "12px",
-            width: "90%",
-            maxWidth: "600px",
-            maxHeight: "80%",
-            overflowY: "auto",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.7)",
-          }}>
-            <h2 style={{ marginTop: 0, marginBottom: "0.5rem", fontSize: "2rem", fontWeight: "bold" }}>{feedbackData.dialogHeader}</h2>
-            <p style={{ margin: 0, lineHeight: 1.4 }}>{feedbackData.description}</p>
-            <div style={{
-              marginTop: "1rem",
-              display: "flex",
-              flexDirection: "column",
-              gap: "1rem",
-            }}>
-              {feedbackData.recommendations.map((rec, idx) => (
-                <div key={idx} style={{
-                  backgroundColor: "#111",
-                  padding: "1rem 1.25rem",
-                  borderRadius: "8px",
-                  width: "100%",
-                }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
-                    <h3 style={{ margin: "0 0 0.5rem 0", fontWeight: "bold", fontSize: "1.1rem" }}>{rec.title}</h3>
-                    {rec.startTimestamp !== undefined && rec.endTimestamp !== undefined && (
-                      <a
-                        href="#"
-                        onClick={(e) => {
-                          e.preventDefault();
-
-                          if(controlMode === "practice") {
-                            // Save current big-interval context before switching
-                            setBigContext({
-                              activeIntervalIndex,
-                              customStart,
-                              customEnd,
-                              afterInterval,
-                            });
-                          }
-
-                          // Enter recommendation (mini) interval mode
-                          setShowFeedbackModal(false);
-                          setFeedbackModalType(null);
-                          setMiniMode(true);
-                          setMiniRecommendation(rec);
-                          setCustomStart(rec.startTimestamp!);
-                          setCustomEnd(rec.endTimestamp!);
-                          setAfterInterval(true);
-                          setActiveIntervalIndex(null);
-                          setControlMode('recommendation');
-                        }}
-                        style={{ color: "#0d6efd", fontSize: "0.9rem" }}
-                      >
-                        {`Practice this Recommendation (${formatTime(rec.startTimestamp!)} - ${formatTime(rec.endTimestamp!)})`}
-                      </a>
-                    )}
-                  </div>
-                  <p style={{ margin: 0, lineHeight: 1.4 }}>{rec.description}</p>
-                </div>
-              ))}
-            </div>
-            <button
-              onClick={() => { setShowFeedbackModal(false); setFeedbackModalType(null); }}
-              style={{
-                marginTop: "1.5rem",
-                padding: "10px 20px",
-                border: "1px solid #fff",
-                backgroundColor: "transparent",
-                color: "#fff",
-                borderRadius: "4px",
-                cursor: "pointer",
-                alignSelf: "center",
-              }}
-            >
-              Close
-            </button>
-          </div>
-        </div>
+				<FeedbackModal
+					feedbackData={feedbackData}
+					onFeedbackModalClose={onFeedbackModalClose}
+					onRecommendationSelect={onRecommendationSelect}
+				/>
       )}
 
       {/* Mini Feedback Modal */}
       {showFeedbackModal && feedbackModalType === 'mini' && miniFeedbackData && (
-        <div style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          width: "100%",
-          height: "100%",
-          backgroundColor: "rgba(0,0,0,0.5)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 1000,
-        }}>
-          <div style={{
-            backgroundColor: "#000",
-            color: "#fff",
-            padding: "2rem",
-            borderRadius: "12px",
-            width: "90%",
-            maxWidth: "500px",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.7)",
-          }}>
-            <h2 style={{ marginTop: 0, fontSize: "1.8rem", fontWeight: "bold" }}>Practice Feedback</h2>
-            <p style={{ lineHeight: 1.4 }}>{miniFeedbackData.description}</p>
-            {miniFeedbackData.sufficient && (
-              <p style={{ marginTop: "1rem", color: "#28a745", fontWeight: "bold" }}>Great job! This looks sufficient.</p>
-            )}
-            <button
-              onClick={() => { setShowFeedbackModal(false); setFeedbackModalType(null); }}
-              style={{
-                marginTop: "1.5rem",
-                padding: "10px 20px",
-                border: "1px solid #fff",
-                backgroundColor: "transparent",
-                color: "#fff",
-                borderRadius: "4px",
-                cursor: "pointer",
-                alignSelf: "center",
-              }}
-            >
-              Close
-            </button>
-          </div>
-        </div>
+				<MiniFeedbackModal
+					miniFeedbackData={miniFeedbackData}
+					onFeedbackModalClose={onFeedbackModalClose}
+				/>
       )}
 
       {/* Last Attempt Modal */}
       {showLastAttemptModal && lastAttemptModalVideoUrl && (
-        <div style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          width: "100%",
-          height: "100%",
-          backgroundColor: "rgba(0,0,0,0.5)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 1000,
-        }}>
-          <div style={{
-            backgroundColor: "#000",
-            color: "#fff",
-            padding: "2rem",
-            borderRadius: "12px",
-            width: "90%",
-            maxWidth: "600px",
-            maxHeight: "80%",
-            overflowY: "auto",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.7)",
-          }}>
-            <h2 style={{ marginTop: 0, fontSize: "1.8rem", fontWeight: "bold" }}>Last Attempt</h2>
-            <video
-              src={lastAttemptModalVideoUrl}
-              controls
-              style={{ width: "100%", borderRadius: "8px", marginTop: "1rem" }}
-            />
-            <button
-              onClick={() => {
-                setShowLastAttemptModal(false);
-                setLastAttemptModalVideoUrl(null);
-              }}
-              style={{
-                marginTop: "1.5rem",
-                padding: "10px 20px",
-                border: "1px solid #fff",
-                backgroundColor: "transparent",
-                color: "#fff",
-                borderRadius: "4px",
-                cursor: "pointer",
-                alignSelf: "center",
-              }}
-            >
-              Close
-            </button>
-          </div>
-        </div>
+				<LastAttemptModal
+					lastAttemptModalVideoUrl={lastAttemptModalVideoUrl}
+					onLastAttemptModalClose={onLastAttemptModalClose}
+				/>
       )}
     </div>
   );
