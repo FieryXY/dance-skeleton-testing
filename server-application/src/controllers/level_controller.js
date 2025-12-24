@@ -141,13 +141,11 @@ router.post('/create', upload.single('video'), async (req, res) => {
         res.status(500).send('Failed to process video');
     }
 });
-
 router.get('/', async (_req, res) => {
     try {
         const levels = await Level.find({}, { title: 1 })
             .sort({ _id: -1 })
             .lean();
-
         res.json(levels.map(level => ({
             id: level._id.toString(),
             title: level.title,
@@ -569,6 +567,17 @@ router.post('/getFeedback/:id', upload.single('video'), async (req, res) => {
     }
     catch (err) {
         res.status(500).send('Failed to process video: ' + err);
+    }
+});
+router.post('/search/:query', async (req, res) => {
+    // Get all levels whose title contains the query string (case-insensitive)
+    try {
+        const query = req.params.query;
+        const levels = await Level.find({ title: { $regex: query, $options: 'i' } }).limit(20);
+        res.json(levels);
+    }
+    catch (err) {
+        res.status(500).send('Server error');
     }
 });
 export { router as LevelController };

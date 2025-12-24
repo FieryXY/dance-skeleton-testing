@@ -995,6 +995,7 @@ export default function PoseComparisonPage() {
 					feedbackData={feedbackData}
 					onFeedbackModalClose={onFeedbackModalClose}
 					onRecommendationSelect={onRecommendationSelect}
+          sessionScorer={scorerRef.current!}
 				/>
       )}
 
