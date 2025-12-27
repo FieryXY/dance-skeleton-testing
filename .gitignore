@@ -4,3 +4,4 @@ server-application/uploads/**
 react-application/build/**
 react-application/.env
 server-application/.env
+node_modules/**
