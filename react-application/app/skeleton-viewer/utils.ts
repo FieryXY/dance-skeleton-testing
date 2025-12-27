@@ -2,6 +2,7 @@ import * as tf from '@tensorflow/tfjs';
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import type { LevelData, TimestampedPoses } from '~/api/endpoints';
 import type { Keypoint } from '@tensorflow-models/pose-detection';
+import { createRollEstimator } from './horizon-estimator';
 
 // Angles
 export const angles_to_consider: { [key: string]: {keypoints: string[], raw_weight: number} } = {
@@ -55,6 +56,29 @@ export const angles_to_consider: { [key: string]: {keypoints: string[], raw_weig
     },
 }
 
+// Order to construct skeleton when trying to create a version of a reference skeleton
+// but with the user's bone lengths
+const skeleton_construction_order: string[][] = [
+	["mid_hip", "left_hip"],
+	["mid_hip", "right_hip"],
+	["mid_hip", "mid_shoulder"],
+	["mid_shoulder", "left_shoulder"],
+	["mid_shoulder", "right_shoulder"],
+	["left_shoulder", "left_elbow"],
+	["right_shoulder", "right_elbow"],
+	["left_elbow", "left_wrist"],
+	["right_elbow", "right_wrist"],
+	["left_hip", "left_knee"],
+	["right_hip", "right_knee"],
+	["left_knee", "left_ankle"],
+	["right_knee", "right_ankle"],
+];
+
+const rollEstimator = createRollEstimator();
+
+
+
+
 // Model and Detector Variables
 const SCORE_THRESHOLD = 0.1
 const PENALTY_FOR_OCCLUDED_KEYPOINT = -10
@@ -71,6 +95,91 @@ tf.ready().then(() => {
         detector = result;
     });
 });
+
+export function createPoseFixerTransformer(getReferencePose: () => poseDetection.Pose | null, cachedAlignedReferencePose: poseDetection.Pose | null, setCachedAlignedReferencePose: (pose: poseDetection.Pose) => void): TransformStream {
+	return new TransformStream({
+		async transform(videoFrame: VideoFrame, controller) {
+			// If the detector isn't ready for some reason, skip
+			if(!detector) {
+				controller.enqueue(videoFrame);
+				return;
+			}
+
+			// Lazily initialize canvas and context on the first frame
+			let offscreenCanvas = new OffscreenCanvas(videoFrame.displayWidth, videoFrame.displayHeight);
+			const ctx = offscreenCanvas.getContext("2d");
+
+			if (!ctx) {
+				controller.enqueue(videoFrame);
+				return;
+			}
+
+			ctx.save();
+
+			// Initially mirror context
+			ctx.translate(videoFrame.displayWidth, 0);
+			ctx.scale(-1, 1);
+
+			// Perform detection and drawing
+			ctx.drawImage(videoFrame, 0, 0, videoFrame.displayWidth, videoFrame.displayHeight);
+
+
+			ctx.restore();
+
+			const poses: poseDetection.Pose[] = await detector.estimatePoses(offscreenCanvas as unknown as HTMLCanvasElement, { flipHorizontal: false });
+
+			// Align reference pose with detected pose
+			const referencePose = getReferencePose();
+
+			// // Get horizon angle
+			// const rollDeg = rollEstimator(videoFrame, {
+			// 	roi: { yMin: 0.0, yMax: 0.75 },   // ignore bottom quarter (often desks/floors)
+			// 	sampleStep: 2,
+			// 	magThreshold: 40,
+			// 	useManhattanPair: true,
+			// });
+
+			// // Draw horizon line for debugging
+			// if(rollDeg !== null) {
+			// 	const centerX = videoFrame.displayWidth / 2;
+			// 	const centerY = videoFrame.displayHeight / 2;
+			// 	const length = Math.sqrt(centerX * centerX + centerY * centerY);
+			// 	const angleRad = rollDeg * (Math.PI / 180);
+
+			// 	ctx.save();
+			// 	ctx.strokeStyle = 'blue';
+			// 	ctx.lineWidth = 2;
+			// 	ctx.beginPath();
+			// 	ctx.moveTo(centerX - length * Math.cos(angleRad), centerY - length * Math.sin(angleRad));
+			// 	ctx.lineTo(centerX + length * Math.cos(angleRad), centerY + length * Math.sin(angleRad));
+			// 	ctx.stroke();
+			// 	ctx.restore();
+			// }
+			
+			const alignedReferencePose = (referencePose && poses.length > 0) ? alignReferencePose(referencePose, poses[0]) : null;
+
+			if(cachedAlignedReferencePose) {
+				console.log("Using cached aligned reference pose for drawing");
+				drawResults([cachedAlignedReferencePose], ctx, model, () => []);
+			}	
+			else if(alignedReferencePose) {
+				drawResults([alignedReferencePose], ctx, model, () => []);
+				setCachedAlignedReferencePose(alignedReferencePose);
+			}
+
+			drawResults(poses, ctx, model, () => [], "#cc8899");
+
+			videoFrame.close();
+
+			const newFrame = new VideoFrame(offscreenCanvas, {
+				timestamp: videoFrame.timestamp,
+				alpha: 'discard'
+			});
+
+			controller.enqueue(newFrame);
+
+		}});
+}
 
 // Stream Transformer that adds skeleton onto the video stream and stores the poses with a function passed in by the caller
 export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses) => any, getMirror: () => boolean, getBadKeypoints: () => string[]): TransformStream {
@@ -99,6 +208,7 @@ export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses
       
             // Perform detection and drawing
             ctx.drawImage(videoFrame, 0, 0, videoFrame.displayWidth, videoFrame.displayHeight);
+
 
             ctx.restore();
 
@@ -135,10 +245,10 @@ export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses
     });
 }
 
-export function drawResults(poses: poseDetection.Pose[], ctx: OffscreenCanvasRenderingContext2D, model: poseDetection.SupportedModels, getBadKeypoints: () => string[]): Boolean {
+export function drawResults(poses: poseDetection.Pose[], ctx: OffscreenCanvasRenderingContext2D, model: poseDetection.SupportedModels, getBadKeypoints: () => string[], boneColor="#00ff00"): Boolean {
     for (const pose of poses) {
         drawKeypoints(pose.keypoints, ctx, getBadKeypoints);
-        drawSkeleton(pose.keypoints, ctx, model);
+        drawSkeleton(pose.keypoints, ctx, model, boneColor=boneColor);
     }
     return true;
 }
@@ -190,9 +300,9 @@ function drawKeypoints(keypoints: poseDetection.Keypoint[], ctx: OffscreenCanvas
     }
 }
 
-function drawSkeleton(keypoints: poseDetection.Keypoint[], ctx: OffscreenCanvasRenderingContext2D, model: poseDetection.SupportedModels) {
+function drawSkeleton(keypoints: poseDetection.Keypoint[], ctx: OffscreenCanvasRenderingContext2D, model: poseDetection.SupportedModels, boneColor = "#00ff00") {
     ctx.fillStyle = 'White';
-    ctx.strokeStyle = '#00ff00'; // Skeleton color
+    ctx.strokeStyle = boneColor; // Skeleton color
     ctx.lineWidth = 2;
 
     // Use the official adjacent pairs from the library for the selected model
@@ -201,6 +311,10 @@ function drawSkeleton(keypoints: poseDetection.Keypoint[], ctx: OffscreenCanvasR
     for (const [i, j] of adjacentPairs) {
         const kp1 = keypoints[i];
         const kp2 = keypoints[j];
+
+				if(!kp1 || !kp2) {
+						continue;
+				}
 
         if(!kp1.score || !kp2.score) {
             continue;
@@ -430,6 +544,273 @@ function calculateAngleFromPoints3D(x1: number, y1: number, z1: number, x2: numb
     return angle;
 }
 
+function alignReferencePose(referencePose: poseDetection.Pose, detectedPose: poseDetection.Pose): poseDetection.Pose {
+
+	// Add a "mid_hip" keypoint to both poses for better alignment
+	if(!referencePose.keypoints.find(kp => kp.name === "mid_hip")) {
+		const referenceLeftHip = referencePose.keypoints.find(kp => kp.name === "left_hip");
+		const referenceRightHip = referencePose.keypoints.find(kp => kp.name === "right_hip");
+		if(!referenceLeftHip || !referenceRightHip) {
+			console.warn("Cannot create mid_hip keypoint for reference pose because left_hip or right_hip is missing.");
+			return referencePose;
+		}
+		referencePose.keypoints.push({
+			x: (referenceLeftHip!.x + referenceRightHip!.x) / 2,
+			y: (referenceLeftHip!.y + referenceRightHip!.y) / 2,
+			z: (typeof referenceLeftHip!.z !== "undefined" && typeof referenceRightHip!.z !== "undefined") ? 
+				(referenceLeftHip!.z! + referenceRightHip!.z!) / 2 : undefined,
+			name: "mid_hip"
+		});
+	}
+
+	if(!referencePose.keypoints.find(kp => kp.name === "mid_shoulder")) {
+		const referenceLeftShoulder = referencePose.keypoints.find(kp => kp.name === "left_shoulder");
+		const referenceRightShoulder = referencePose.keypoints.find(kp => kp.name === "right_shoulder");
+		if(!referenceLeftShoulder || !referenceRightShoulder) {
+			console.warn("Cannot create mid_shoulder keypoint for reference pose because left_shoulder or right_shoulder is missing.");
+			return referencePose;
+		}
+		referencePose.keypoints.push({
+			x: (referenceLeftShoulder!.x + referenceRightShoulder!.x) / 2,
+			y: (referenceLeftShoulder!.y + referenceRightShoulder!.y) / 2,
+			z: (typeof referenceLeftShoulder!.z !== "undefined" && typeof referenceRightShoulder!.z !== "undefined") ? 
+				(referenceLeftShoulder!.z! + referenceRightShoulder!.z!) / 2 : undefined,
+			name: "mid_shoulder"
+		});
+	}
+
+	if(!detectedPose.keypoints.find(kp => kp.name === "mid_hip")) {
+		const detectedLeftHip = detectedPose.keypoints.find(kp => kp.name === "left_hip");
+		const detectedRightHip = detectedPose.keypoints.find(kp => kp.name === "right_hip");
+		if(!detectedLeftHip || !detectedRightHip) {
+			console.warn("Cannot create mid_hip keypoint for detected pose because left_hip or right_hip is missing.");
+			return referencePose;
+		}
+		detectedPose.keypoints.push({
+				x: (detectedLeftHip!.x + detectedRightHip!.x) / 2,
+				y: (detectedLeftHip!.y + detectedRightHip!.y) / 2,
+				z: (typeof detectedLeftHip!.z !== "undefined" && typeof detectedRightHip!.z !== "undefined") ? (detectedLeftHip!.z! + detectedRightHip!.z!) / 2 : undefined,
+				name: "mid_hip"
+		});
+	}
+
+	if(!detectedPose.keypoints.find(kp => kp.name === "mid_shoulder")) {
+		const detectedLeftShoulder = detectedPose.keypoints.find(kp => kp.name === "left_shoulder");
+		const detectedRightShoulder = detectedPose.keypoints.find(kp => kp.name === "right_shoulder");
+		if(!detectedLeftShoulder || !detectedRightShoulder) {
+			console.warn("Cannot create mid_shoulder keypoint for detected pose because left_shoulder or right_shoulder is missing.");
+			return referencePose;
+		}
+		detectedPose.keypoints.push({
+				x: (detectedLeftShoulder!.x + detectedRightShoulder!.x) / 2,
+				y: (detectedLeftShoulder!.y + detectedRightShoulder!.y) / 2,
+				z: (typeof detectedLeftShoulder!.z !== "undefined" && typeof detectedRightShoulder!.z !== "undefined") ? (detectedLeftShoulder!.z! + detectedRightShoulder!.z!) / 2 : undefined,
+				name: "mid_shoulder"
+		});
+	}
+
+	// First, compute bone lengths for the detected pose (taking into account depth if available)
+	// We use the bones in skeleton_construction_order
+	const boneLengths: (number | null)[] = [];
+	for (const [startName, endName] of skeleton_construction_order) {
+		const startKp = detectedPose.keypoints.find(kp => kp.name === startName);
+		const endKp = detectedPose.keypoints.find(kp => kp.name === endName);
+
+		if (startKp && endKp) {
+			const length = Math.sqrt(
+				(endKp.x - startKp.x) ** 2 +
+				(endKp.y - startKp.y) ** 2
+				// ((typeof endKp.z !== "undefined" && typeof startKp.z !== "undefined") ? (endKp.z - startKp.z) ** 2 : 0)
+			);
+			boneLengths.push(length);
+		} else {
+			boneLengths.push(null); // Placeholder for missing bone length
+		}
+	}
+
+	let new_keypoints: Record<string, Keypoint> = {}
+	new_keypoints["mid_hip"] = {
+		x: 0,
+		y: 0,
+		z: 0,
+		name: "mid_hip"
+	};
+
+	new_keypoints["mid_hip"] = referencePose.keypoints.find(kp => kp.name === "mid_hip")!;
+
+	for(let i = 0; i < skeleton_construction_order.length; i++) {
+		const [startName, endName] = skeleton_construction_order[i];
+		const referenceStartKp = referencePose.keypoints.find(kp => kp.name === startName);
+		const referenceEndKp = referencePose.keypoints.find(kp => kp.name === endName);
+		const newStartKp = new_keypoints[startName];
+
+		let boneLength = boneLengths[i];
+		const directionUnitVector = {
+			x: referenceEndKp!.x - referenceStartKp!.x,
+			y: referenceEndKp!.y - referenceStartKp!.y,
+			z: (typeof referenceEndKp!.z !== "undefined" && typeof referenceStartKp!.z !== "undefined") ? (referenceEndKp!.z - referenceStartKp!.z) : 0,
+		};
+		const magnitude = Math.sqrt(directionUnitVector.x ** 2 + directionUnitVector.y ** 2 + directionUnitVector.z ** 2);
+		directionUnitVector.x /= magnitude;
+		directionUnitVector.y /= magnitude;
+		directionUnitVector.z /= magnitude;
+
+		// if(newStartKp.z === undefined) {
+		// 	console.log("WARNING: newStartKp.z is undefined for keypoint", startName);
+		// 	return referencePose;
+		// }
+
+		const newEndKp = {
+			x: newStartKp.x + directionUnitVector.x * (boneLength !== null ? boneLength : magnitude),
+			y: newStartKp.y + directionUnitVector.y * (boneLength !== null ? boneLength : magnitude),
+			z: (typeof newStartKp.z !== "undefined") ? (newStartKp.z + directionUnitVector.z * (boneLength !== null ? boneLength : magnitude)) : undefined,
+			name: endName,
+			score: 1.0,
+		};
+
+		new_keypoints[endName] = newEndKp;
+	}
+
+	// Re-order new_keypoints into an array with the same order as referencePose.keypoints
+	const ordered_new_keypoints: Keypoint[] = [];
+	for(const refKp of referencePose.keypoints) {
+		const newKp = new_keypoints[refKp.name];
+		if(newKp) {
+			ordered_new_keypoints.push(newKp);
+		} else {
+			ordered_new_keypoints.push({
+				x: refKp.x,
+				y: refKp.y,
+				name: refKp.name,
+				score: 0.0,
+			});
+		}
+	}
+
+	// At this point, new_keypoints contains the reference pose with the user's bone lengths. Now, we use 2D Procrustes to align it to the detected pose.
+	// Specifically, we use translation/scaling/rotation but only using left_hip and right_hip for alignment
+	
+	const keypointsForProcrustes: string[] = ["left_hip", "right_hip", "left_shoulder", "right_shoulder"];
+
+	let detectedPoints: number[][] = [];
+	let referencePoints: number[][] = [];
+
+	for(const kpName of keypointsForProcrustes) {
+		const detectedKp = detectedPose.keypoints.find(kp => kp.name === kpName);
+		const referenceKp = new_keypoints[kpName];
+
+		if(detectedKp && referenceKp && detectedKp.score && detectedKp.score >= SCORE_THRESHOLD) {
+			detectedPoints.push([detectedKp.x, detectedKp.y, detectedKp.z ? detectedKp.z : 0]);
+			referencePoints.push([referenceKp.x, referenceKp.y, referenceKp.z ? referenceKp.z : 0]);
+		}
+	}
+
+	// If we don't have enough points for Procrustes, return the original reference pose
+	if(detectedPoints.length < 2 || referencePoints.length < 2) {
+		return referencePose;
+	}
+
+	// Compute centroids
+	const detectedCentroid = detectedPoints.reduce((acc, point) => [acc[0] + point[0], acc[1] + point[1], acc[2] + point[2]], [0, 0, 0]).map(coord => coord / detectedPoints.length);
+	const referenceCentroid = referencePoints.reduce((acc, point) => [acc[0] + point[0], acc[1] + point[1], acc[2] + point[2]], [0, 0, 0]).map(coord => coord / referencePoints.length);
+
+	// Center the points
+	const centeredDetected = detectedPoints.map(point => [point[0] - detectedCentroid[0], point[1] - detectedCentroid[1]]);
+	const centeredReference = referencePoints.map(point => [point[0] - referenceCentroid[0], point[1] - referenceCentroid[1]]);
+
+	// Compute scaling factors
+	const detectedScale = Math.sqrt(centeredDetected.reduce((sum, point) => sum + point[0] ** 2 + point[1] ** 2, 0) / centeredDetected.length);
+	const referenceScale = Math.sqrt(centeredReference.reduce((sum, point) => sum + point[0] ** 2 + point[1] ** 2, 0) / centeredReference.length);
+
+	const scale = detectedScale / referenceScale;
+
+	if (referenceScale < 1e-6) {
+		console.log("WARNING: referenceScale is too small, skipping alignment.");
+		return referencePose;
+	}
+
+	// Rotation
+	let b = 0;
+	let a = 0;
+	for(let i = 0; i < centeredDetected.length; i++) {
+		b += centeredReference[i][0] * centeredDetected[i][1] - centeredReference[i][1] * centeredDetected[i][0];
+		a += centeredReference[i][0] * centeredDetected[i][0] + centeredReference[i][1] * centeredDetected[i][1];
+	}
+
+	const rotationAngle = Math.atan2(b, a);
+	const cosTheta = Math.cos(rotationAngle);
+	const sinTheta = Math.sin(rotationAngle);
+
+	// Now apply all 3 transformations to all keypoints in new_keypoints
+	let final_keypoints: Keypoint[] = [];
+	for(const kpName in new_keypoints) {
+		const kp = new_keypoints[kpName];
+		// Center
+		let pointVec = [kp.x - referenceCentroid[0], kp.y - referenceCentroid[1], kp.z ? kp.z - referenceCentroid[2] : 0];
+		// Scale
+		// pointVec[0] = pointVec[0] * scale;
+		// pointVec[1] = pointVec[1] * scale;
+		// Rotate
+		// pointVec = [cosTheta * pointVec[0] - sinTheta * pointVec[1], sinTheta * pointVec[0] + cosTheta * pointVec[1]];
+		// Translate
+		pointVec = [pointVec[0] + detectedCentroid[0], pointVec[1] + detectedCentroid[1], pointVec[2] + detectedCentroid[2]];
+		final_keypoints.push({
+			x: pointVec[0],
+			y: pointVec[1],
+			z: 0,
+			name: kpName,
+			score: 1.0,
+		});
+	}
+
+	// Re-order final_keypoints to match the order of referencePose.keypoints, adding score-0 keypoints if any are missing
+	const ordered_final_keypoints: Keypoint[] = [];
+	for(const refKp of referencePose.keypoints) {
+		const finalKp = final_keypoints.find(kp => kp.name === refKp.name);
+		if(finalKp) {
+			ordered_final_keypoints.push(finalKp);
+		} else {
+			ordered_final_keypoints.push({
+				x: refKp.x,
+				y: refKp.y,
+				z: 0,
+				name: refKp.name,
+				score: 0.0,
+			});
+		}
+	}
+
+	return {
+		keypoints: ordered_final_keypoints,
+	}
+}
+
+export function getPoseFromTimestamp(poses: TimestampedPoses[], originalTimestamp: number): TimestampedPoses | null {
+	let left = 0;
+	let right = poses.length - 1;
+	let closestPose: TimestampedPoses = poses[0];
+	
+	while (left <= right) {
+			const mid = Math.floor((left + right) / 2);
+			const midPose = poses[mid];
+			
+			if (Math.abs(midPose.timestamp - originalTimestamp) < Math.abs(closestPose.timestamp - originalTimestamp)) {
+					closestPose = midPose;
+			}
+			
+			if (midPose.timestamp < originalTimestamp) {
+					left = mid + 1;
+			} else if (midPose.timestamp > originalTimestamp) {
+					right = mid - 1;
+			} else {
+					// Exact match found
+					closestPose = midPose;
+					break;
+			}
+	}
+	return closestPose;
+}
+
 
 
 // Scoring Class
@@ -475,28 +856,7 @@ export class SessionScorer {
         }
 
         // Binary search to find the closest pose since pose_data is sorted by timestamp
-        let left = 0;
-        let right = this.levelData.pose_data.length - 1;
-        let closestPose: TimestampedPoses = this.levelData.pose_data[0];
-        
-        while (left <= right) {
-            const mid = Math.floor((left + right) / 2);
-            const midPose = this.levelData.pose_data[mid];
-            
-            if (Math.abs(midPose.timestamp - originalTimestamp) < Math.abs(closestPose.timestamp - originalTimestamp)) {
-                closestPose = midPose;
-            }
-            
-            if (midPose.timestamp < originalTimestamp) {
-                left = mid + 1;
-            } else if (midPose.timestamp > originalTimestamp) {
-                right = mid - 1;
-            } else {
-                // Exact match found
-                closestPose = midPose;
-                break;
-            }
-        }
+				const closestPose = getPoseFromTimestamp(this.levelData.pose_data, originalTimestamp);
 
         if(closestPose == null) {
             return this.last_score;

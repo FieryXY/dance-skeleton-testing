@@ -5,10 +5,11 @@ import VideoPlayer from "../video-player/VideoPlayer";
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import type { LevelData, TimestampedPoses, FeedbackResponse, MiniFeedbackResponse, ProcessedFeedbackRecommendation } from "~/api/endpoints";
 import endpoints from "~/api/endpoints";
-import { angles_to_consider, SessionScorer } from "../skeleton-viewer/utils";
+import { angles_to_consider, getPoseFromTimestamp, SessionScorer } from "../skeleton-viewer/utils";
 import { useNavigate, useParams } from 'react-router';
 import FeedbackModal from "./modals/FeedbackModal";
 import { loadCalibrationMs, useCalibration } from '../utils/calibration';
+import PoseFixer from "./PoseFixer";
 import MiniFeedbackModal from "./modals/MiniFeedbackModal";
 import LastAttemptModal from "./modals/LastAttemptModal";
 
@@ -121,6 +122,16 @@ export default function PoseComparisonPage() {
       }
     }
   };
+
+	const getCurrentReferencePose = useCallback(() : poseDetection.Pose | null => {
+		if(!levelData || !videoRef.current) return null;
+
+		const currentTimestamp = videoRef.current.currentTime * 1000;
+
+		const timestamped_pose = getPoseFromTimestamp(levelData.pose_data, currentTimestamp);
+
+		return (timestamped_pose && timestamped_pose.poses.length > 0) ? timestamped_pose.poses[0] : null;
+	}, [levelData, videoRef]);
 
   // Fetch level data and associated annotated video
   const handleFetch = async () => {
@@ -695,16 +706,46 @@ export default function PoseComparisonPage() {
 								levelData && videoRef.current &&
                 <SkeletonViewer
                   reportPoses={handleWebcamPose}
+									overlay_type={overlayType}
+									getReferencePose={getCurrentReferencePose}
                   useWebcam={true}
                   mediaStream={null}
                   width={FEED_SIZE}
                   height={FEED_SIZE}
                   badKeypointsProp={badKeypoints}
+									cachedAlignedReferencePose={currentAlignedPose}
+									setCachedAlignedReferencePose={setCurrentAlignedPose}
                 />
 							}
               </div>
             </div>
           )}
+          {/* Fix Picture / Exit controls for PoseFixer flow */}
+          <div style={{ position: 'absolute', bottom: 10, left: 10, zIndex: 3 }}>
+            {overlayType !== 'pose_fixer' ? (
+              <button
+                onClick={() => {
+                  // Start countdown from 5 to enter pose-fixer mode
+                  setCountdown(5);
+                  setPoseFixerStarting(true);
+                }}
+                disabled={!videoRef.current || !videoRef.current.paused}
+                style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#007bff', color: '#fff' }}
+              >
+                Fix Picture
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  // Exit pose-fixer mode
+                  setOverlayType('live');
+                }}
+                style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#6c757d', color: '#fff' }}
+              >
+                Exit
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Annotated Video Section */}

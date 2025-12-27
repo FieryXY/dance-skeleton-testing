@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type { Route } from "react-router";
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import '@tensorflow/tfjs-backend-webgl';
-import { createSkeletonVideoTransformer, drawResults } from "./utils"
+import { createPoseFixerTransformer, createSkeletonVideoTransformer, drawResults } from "./utils"
 import type { TimestampedPoses } from "~/api/endpoints";
 
 
@@ -11,18 +11,26 @@ interface SkeletonViewerProps {
   reportPoses: (pose: TimestampedPoses) => void,
   useWebcam: boolean,
   mediaStream: MediaStream | null,
+	overlay_type: "live" | "pose_fixer"
   width?: number,
   height?: number,
   badKeypointsProp: string[]
+	getReferencePose?: () => poseDetection.Pose | null,
+	cachedAlignedReferencePose?: poseDetection.Pose | null,
+	setCachedAlignedReferencePose?: (pose: poseDetection.Pose | null) => void,
 }
 
 export default function SkeletonViewer({
   reportPoses,
   useWebcam,
   mediaStream,
+	overlay_type="live",
   width = 800,
   height = 800,
   badKeypointsProp = [],
+	getReferencePose = (() => null),
+	cachedAlignedReferencePose = null,
+	setCachedAlignedReferencePose = (() => {}),
 }: SkeletonViewerProps) {
 	  // useRef to get a reference to the video element
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -70,9 +78,15 @@ export default function SkeletonViewer({
         const videoTrack = stream.getVideoTracks()[0];
         const trackProcessor = new MediaStreamTrackProcessor({ track: videoTrack });
         const trackGenerator = new MediaStreamTrackGenerator({ kind: "video" });
-        const transformer: TransformStream = createSkeletonVideoTransformer(reportPoses, getMirror, getBadKeypoints);
+				if(overlay_type === "live") {
+					const transformer: TransformStream = createSkeletonVideoTransformer(reportPoses, getMirror, getBadKeypoints);
+					trackProcessor.readable.pipeThrough(transformer).pipeTo(trackGenerator.writable);
+				}
+				else if(overlay_type === "pose_fixer") {
+					const transformer: TransformStream = createPoseFixerTransformer(getReferencePose, cachedAlignedReferencePose, setCachedAlignedReferencePose);
+					trackProcessor.readable.pipeThrough(transformer).pipeTo(trackGenerator.writable);
+				}
 
-        trackProcessor.readable.pipeThrough(transformer).pipeTo(trackGenerator.writable);
         
         const processedStream = new MediaStream([trackGenerator]);
         if (videoRef.current) {
@@ -89,8 +103,8 @@ export default function SkeletonViewer({
     // Call the async function
     if(videoRef.current && videoRef.current.srcObject) {
       // Don't allow changing the media stream once it has already been set once
-      console.log("Media Stream already present")
-      return;
+      // console.log("Media Stream already present")
+      // return;
     }
     setupAndRun();
 
@@ -103,7 +117,7 @@ export default function SkeletonViewer({
         console.log("Webcam stream stopped.");
       }
     };
-  }, [mediaStream]);
+  }, [mediaStream, getReferencePose, overlay_type, cachedAlignedReferencePose]);
 
 
 	return (
